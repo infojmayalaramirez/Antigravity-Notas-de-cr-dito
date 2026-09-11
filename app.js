@@ -643,8 +643,15 @@ function applyRolePermissions() {
     const view = link.dataset.view;
     let allowed = true;
 
-    // Reportes, Sucursales, Usuarios, Presupuestos y Lotes son exclusivos de Administrador y Gerente
-    if (view === 'reportes' || view === 'sucursales' || view === 'usuarios' || view === 'presupuestos' || view === 'lotes') {
+    // Sucursales y Usuarios son exclusivos del Administrador Universal
+    if (view === 'sucursales' || view === 'usuarios') {
+      if (rol !== 'Administrador') {
+        allowed = false;
+      }
+    }
+
+    // Reportes, Presupuestos y Lotes son de Administrador y Gerente
+    if (view === 'reportes' || view === 'presupuestos' || view === 'lotes') {
       if (rol !== 'Administrador' && rol !== 'Gerente') {
         allowed = false;
       }
@@ -3050,12 +3057,31 @@ window.removeSucursal = async function(id) {
 
 // --- 7. VIEW: USUARIOS (PERSISTENCIA DIRECTA EN SQL SERVER) ---
 function setupUsuariosView() {
+  const selectRol = document.getElementById('usr-rol');
+  const groupAdminTipo = document.getElementById('group-usr-admin-tipo');
+
+  function updateAdminTipoVisibility() {
+    if (groupAdminTipo) {
+      if (selectRol && selectRol.value === 'Administrador') {
+        groupAdminTipo.classList.remove('hidden');
+      } else {
+        groupAdminTipo.classList.add('hidden');
+      }
+    }
+  }
+
+  if (selectRol) {
+    selectRol.addEventListener('change', updateAdminTipoVisibility);
+    updateAdminTipoVisibility();
+  }
+
   document.getElementById('form-usuario').addEventListener('submit', async (e) => {
     e.preventDefault();
     const idInput = document.getElementById('usr-id').value;
     const nombre = document.getElementById('usr-nombre').value.trim();
     const email = document.getElementById('usr-email').value.trim();
     const rol = document.getElementById('usr-rol').value;
+    const adminTipo = document.getElementById('usr-admin-tipo')?.value || 'Ambos';
     const sucursalId = document.getElementById('usr-sucursal').value;
     const direccion = document.getElementById('usr-direccion').value.trim();
     const telefono = document.getElementById('usr-telefono').value.trim();
@@ -3071,6 +3097,7 @@ function setupUsuariosView() {
       nombre,
       email,
       rol,
+      adminTipo,
       sucursalId,
       nip,
       direccion,
@@ -3132,6 +3159,10 @@ function setupUsuariosView() {
 function resetUsuarioForm() {
   document.getElementById('form-usuario').reset();
   document.getElementById('usr-id').value = '';
+  document.getElementById('usr-admin-tipo').value = 'Ambos';
+  const groupAdminTipo = document.getElementById('group-usr-admin-tipo');
+  if (groupAdminTipo) groupAdminTipo.classList.remove('hidden');
+
   document.getElementById('form-usuario-title').textContent = 'Registrar Nuevo Usuario';
   document.getElementById('btn-save-usuario').innerHTML = '<i class="fa-solid fa-plus"></i> Guardar Usuario';
   document.getElementById('btn-cancel-edit-usuario').classList.add('hidden');
@@ -3145,6 +3176,14 @@ window.editUsuario = function(id) {
   document.getElementById('usr-nombre').value = u.nombre;
   document.getElementById('usr-email').value = u.email;
   document.getElementById('usr-rol').value = u.rol;
+  if (document.getElementById('usr-admin-tipo')) {
+    document.getElementById('usr-admin-tipo').value = u.adminTipo || 'Ambos';
+    const groupAdminTipo = document.getElementById('group-usr-admin-tipo');
+    if (groupAdminTipo) {
+      if (u.rol === 'Administrador') groupAdminTipo.classList.remove('hidden');
+      else groupAdminTipo.classList.add('hidden');
+    }
+  }
   document.getElementById('usr-sucursal').value = u.sucursalId || u.id_sucursal || '';
   document.getElementById('usr-nip').value = u.nip || '';
   document.getElementById('usr-direccion').value = u.direccion || '';
@@ -3187,11 +3226,13 @@ function renderUsuariosTable() {
       actionButtons += `<button class="btn btn-danger btn-sm" onclick="removeUsuario('${userIdVal}')"><i class="fa-solid fa-trash"></i></button>`;
     }
 
+    const rolDisplay = u.rol === 'Administrador' ? `Administrador <small style="color:var(--text-muted);">(${u.adminTipo || 'Ambos'})</small>` : u.rol;
+
     tr.innerHTML = `
       <td><strong>${u.nombre}</strong></td>
       <td>${u.email}</td>
       <td><span style="color:#16a34a; font-weight:600;"><i class="fa-brands fa-whatsapp"></i> ${u.telefono || 'Sin registrar'}</span></td>
-      <td>${u.rol}</td>
+      <td>${rolDisplay}</td>
       <td>${suc ? suc.nombre : 'N/A'}</td>
       <td>${nipDisplay}</td>
       <td>${estadoBadge}</td>
