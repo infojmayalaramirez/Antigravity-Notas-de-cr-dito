@@ -1,0 +1,26 @@
+[
+  {
+    "id": "U01",
+    "id_usuario": "U01",
+    "nombre": "Administrador Universal",
+    "email": "admin@casaayala.com",
+    "rol": "Administrador",
+    "sucursalId": "S01",
+    "id_sucursal": "S01",
+    "nip": "4819",
+    "bloqueado": false,
+    "adminTipo": "Ambos"
+  },
+  {
+    "id": "U02",
+    "id_usuario": "U02",
+    "nombre": "Consuelo Carrillo",
+    "email": "consuelo.carrillo2022@gmail.com",
+    "rol": "Administrador",
+    "sucursalId": "S01",
+    "id_sucursal": "S01",
+    "nip": "2526",
+    "bloqueado": false,
+    "adminTipo": "Ambos"
+  }
+]
