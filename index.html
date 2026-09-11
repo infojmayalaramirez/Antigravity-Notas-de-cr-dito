@@ -1212,83 +1212,167 @@
               <span>Administración de Usuarios y Permisos</span>
             </div>
 
-            <!-- Estructura Informativa de Jerarquía de Usuarios y Permisos -->
+            <!-- Estructura Informativa de Jerarquía de Usuarios y Matriz de Permisos -->
             <div class="card"
-              style="margin-bottom: 24px; border-left: 4px solid var(--accent-color); background: #fdfdfd;">
-              <div class="card-title" style="font-size: 15px; color: var(--primary-color);">
-                <i class="fa-solid fa-sitemap"></i> Jerarquía de Usuarios y Matriz de Permisos
+              style="margin-bottom: 24px; border-left: 4px solid var(--accent-color); background: #ffffff;">
+              <div class="card-title" style="font-size: 15px; color: var(--primary-color); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                <span><i class="fa-solid fa-sitemap"></i> Jerarquía de Usuarios y Matriz de Permisos</span>
+                <span class="badge badge-secondary" style="font-size:11px; font-weight:600;">Estructura de Roles y Accesos del Sistema</span>
               </div>
-              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px;">
+              
+              <!-- Cards de Niveles de Jerarquía -->
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px;">
 
-                <div
-                  style="background: #ffffff; padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-color);">
+                <div style="background: #fffbe6; padding: 12px; border-radius: var(--radius-sm); border: 1px solid #fef08a;">
                   <div style="font-weight: 700; color: #b45309; font-size: 12.5px; margin-bottom: 4px;">
                     👑 1. Administrador Universal
                   </div>
-                  <div style="font-size: 11px; color: var(--text-muted); line-height: 1.4;">
+                  <div style="font-size: 11px; color: var(--text-muted); line-height: 1.45;">
                     <strong>Nivel 1 (Superusuario)</strong><br>
                     • Acceso global a todas las sucursales.<br>
-                    • Alta, edición y desbloqueo de usuarios.<br>
-                    • Alta de catálogos y presupuestos.<br>
-                    • Aprobación de excepciones.<br>
-                    • <strong style="color:#b91c1c;">Cancelación de Notas de Crédito</strong>.
+                    • Alta, edición, desbloqueo y NIPs de usuarios.<br>
+                    • Subtipo de Admin (Ambos, Físico o Financiero).<br>
+                    • Gestión de sucursales, catálogos y presupuestos.<br>
+                    • Aprobación de excepciones y descuentos.<br>
+                    • <strong style="color:#b91c1c;">Cancelación global de Notas de Crédito</strong>.
                   </div>
                 </div>
 
-                <div
-                  style="background: #ffffff; padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-color);">
+                <div style="background: #f8fafc; padding: 12px; border-radius: var(--radius-sm); border: 1px solid #e2e8f0;">
                   <div style="font-weight: 700; color: #1e293b; font-size: 12.5px; margin-bottom: 4px;">
                     🏢 2. Gerente de Sucursal
                   </div>
-                  <div style="font-size: 11px; color: var(--text-muted); line-height: 1.4;">
+                  <div style="font-size: 11px; color: var(--text-muted); line-height: 1.45;">
                     <strong>Nivel 2 (Supervisión)</strong><br>
                     • Control total de su sucursal asignada.<br>
-                    • Asignación de presupuestos.<br>
-                    • Autorización y firma de notas.<br>
+                    • Asignación de presupuestos por vendedor.<br>
+                    • Autorización y firma digital de notas.<br>
                     • Alertas e informes gerenciales.<br>
-                    • <strong style="color:#b91c1c;">Cancelación de Notas de Crédito</strong>.
+                    • <strong style="color:#b91c1c;">Cancelación de notas de su sucursal</strong>.
                   </div>
                 </div>
 
-                <div
-                  style="background: #ffffff; padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-color);">
+                <div style="background: #f0f9ff; padding: 12px; border-radius: var(--radius-sm); border: 1px solid #bae6fd;">
                   <div style="font-weight: 700; color: #0284c7; font-size: 12.5px; margin-bottom: 4px;">
                     📦 3. Jefe de Almacén
                   </div>
-                  <div style="font-size: 11px; color: var(--text-muted); line-height: 1.4;">
-                    <strong>Nivel 3 (Físico)</strong><br>
+                  <div style="font-size: 11px; color: var(--text-muted); line-height: 1.45;">
+                    <strong>Nivel 3 (Operativo Físico)</strong><br>
                     • Verificación física de producto devuelto.<br>
-                    • Inspección de causas (Mal estado/Diferencia).<br>
-                    • Firma de recepción en Almacén.
+                    • Inspección de causas (Mal estado / Diferencia).<br>
+                    • Firma de recepción en Almacén (N. Físicas).<br>
+                    • Registro y consulta de Faltantes en Picking.
                   </div>
                 </div>
 
-                <div
-                  style="background: #ffffff; padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-color);">
+                <div style="background: #f0fdf4; padding: 12px; border-radius: var(--radius-sm); border: 1px solid #bbf7d0;">
                   <div style="font-weight: 700; color: #16a34a; font-size: 12.5px; margin-bottom: 4px;">
                     📊 4. Contabilidad Central
                   </div>
-                  <div style="font-size: 11px; color: var(--text-muted); line-height: 1.4;">
-                    <strong>Nivel 3 (Financiero)</strong><br>
+                  <div style="font-size: 11px; color: var(--text-muted); line-height: 1.45;">
+                    <strong>Nivel 3 (Control Financiero)</strong><br>
                     • Revisión y conciliación fiscal.<br>
-                    • Auditoría de impuestos (IVA/IEPS).<br>
-                    • Firma digital de validación financiera.
+                    • Auditoría de impuestos (IVA / IEPS).<br>
+                    • Firma digital de validación financiera.<br>
+                    • Reportes e historial de Faltantes Picking.
                   </div>
                 </div>
 
-                <div
-                  style="background: #ffffff; padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-color);">
+                <div style="background: #faf5ff; padding: 12px; border-radius: var(--radius-sm); border: 1px solid #e9d5ff;">
                   <div style="font-weight: 700; color: #8b5cf6; font-size: 12.5px; margin-bottom: 4px;">
                     💼 5. Vendedor
                   </div>
-                  <div style="font-size: 11px; color: var(--text-muted); line-height: 1.4;">
-                    <strong>Nivel 4 (Operativo)</strong><br>
+                  <div style="font-size: 11px; color: var(--text-muted); line-height: 1.45;">
+                    <strong>Nivel 4 (Captura Operativa)</strong><br>
                     • Captura de Notas Físicas y Financieras.<br>
                     • Verificación de presupuesto disponible.<br>
-                    • Elaboración de borradores y solicitudes.
+                    • Elaboración de borradores y solicitudes.<br>
+                    • Consulta de avance presupuestal propio.
                   </div>
                 </div>
 
+              </div>
+
+              <!-- Matriz Comparativa de Permisos en Tabla -->
+              <div style="overflow-x: auto; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+                <table class="table-modern" style="font-size: 11.5px; width:100%; border-collapse: collapse;">
+                  <thead>
+                    <tr style="background: #f8fafc; text-align: left;">
+                      <th style="padding: 8px 12px;">Módulo / Funcionalidad</th>
+                      <th style="padding: 8px 10px; color:#b45309; text-align:center;">👑 Admin Universal</th>
+                      <th style="padding: 8px 10px; color:#1e293b; text-align:center;">🏢 Gerente</th>
+                      <th style="padding: 8px 10px; color:#0284c7; text-align:center;">📦 Almacén</th>
+                      <th style="padding: 8px 10px; color:#16a34a; text-align:center;">📊 Contabilidad</th>
+                      <th style="padding: 8px 10px; color:#8b5cf6; text-align:center;">💼 Vendedor</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td style="padding: 7px 12px; font-weight:600;">Usuarios y NIPs</td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Total Global</span></td>
+                      <td style="text-align:center; color:var(--text-muted);">-</td>
+                      <td style="text-align:center; color:var(--text-muted);">-</td>
+                      <td style="text-align:center; color:var(--text-muted);">-</td>
+                      <td style="text-align:center; color:var(--text-muted);">-</td>
+                    </tr>
+                    <tr style="background:#fafafa;">
+                      <td style="padding: 7px 12px; font-weight:600;">Sucursales y Catálogos</td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Total Global</span></td>
+                      <td style="text-align:center;"><span class="badge badge-secondary">👁️ Consulta</span></td>
+                      <td style="text-align:center;"><span class="badge badge-secondary">👁️ Consulta</span></td>
+                      <td style="text-align:center;"><span class="badge badge-secondary">👁️ Consulta</span></td>
+                      <td style="text-align:center;"><span class="badge badge-secondary">👁️ Consulta</span></td>
+                    </tr>
+                    <tr>
+                      <td style="padding: 7px 12px; font-weight:600;">Presupuestos Mensuales</td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Total Global</span></td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Asigna Sucursal</span></td>
+                      <td style="text-align:center; color:var(--text-muted);">-</td>
+                      <td style="text-align:center; color:var(--text-muted);">-</td>
+                      <td style="text-align:center;"><span class="badge badge-secondary">👁️ Consulta Propio</span></td>
+                    </tr>
+                    <tr style="background:#fafafa;">
+                      <td style="padding: 7px 12px; font-weight:600;">Notas Físicas</td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Full / Autoriza</span></td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Autoriza Sucursal</span></td>
+                      <td style="text-align:center;"><span class="badge badge-warning">✍️ Firma Recepción</span></td>
+                      <td style="text-align:center;"><span class="badge badge-secondary">👁️ Consulta</span></td>
+                      <td style="text-align:center;"><span class="badge badge-draft">📝 Captura Solicitud</span></td>
+                    </tr>
+                    <tr>
+                      <td style="padding: 7px 12px; font-weight:600;">Notas Financieras</td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Full / Autoriza</span></td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Autoriza Sucursal</span></td>
+                      <td style="text-align:center; color:var(--text-muted);">-</td>
+                      <td style="text-align:center;"><span class="badge badge-warning">✍️ Firma Auditoría</span></td>
+                      <td style="text-align:center;"><span class="badge badge-draft">📝 Captura Solicitud</span></td>
+                    </tr>
+                    <tr style="background:#fafafa;">
+                      <td style="padding: 7px 12px; font-weight:600;">Lotes de Folios Impresos</td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Global</span></td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Sucursal</span></td>
+                      <td style="text-align:center; color:var(--text-muted);">-</td>
+                      <td style="text-align:center; color:var(--text-muted);">-</td>
+                      <td style="text-align:center; color:var(--text-muted);">-</td>
+                    </tr>
+                    <tr>
+                      <td style="padding: 7px 12px; font-weight:600;">Faltantes en Picking</td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Total</span></td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Sucursal</span></td>
+                      <td style="text-align:center;"><span class="badge badge-draft">📝 Captura</span></td>
+                      <td style="text-align:center;"><span class="badge badge-secondary">👁️ Consulta</span></td>
+                      <td style="text-align:center; color:var(--text-muted);">-</td>
+                    </tr>
+                    <tr style="background:#fafafa;">
+                      <td style="padding: 7px 12px; font-weight:600;">Cancelación de Notas</td>
+                      <td style="text-align:center;"><span class="badge badge-danger">✓ Cancelación Global</span></td>
+                      <td style="text-align:center;"><span class="badge badge-danger">✓ Cancelación Sucursal</span></td>
+                      <td style="text-align:center; color:var(--text-muted);">-</td>
+                      <td style="text-align:center; color:var(--text-muted);">-</td>
+                      <td style="text-align:center; color:var(--text-muted);">-</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
 
