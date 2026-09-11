@@ -9,7 +9,8 @@ const INITIAL_SUCURSALES = [
 ];
 
 const INITIAL_USUARIOS = [
-  { id: "U01", nombre: "Administrador Universal", email: "admin@casaayala.com", rol: "Administrador", sucursalId: "S01", nip: "4819", intentosFallidos: 0, bloqueado: false, adminTipo: "Ambos" }
+  { id: "U01", id_usuario: "U01", nombre: "Administrador Universal", email: "admin@casaayala.com", rol: "Administrador", sucursalId: "S01", id_sucursal: "S01", nip: "4819", intentosFallidos: 0, bloqueado: false, adminTipo: "Ambos" },
+  { id: "U02", id_usuario: "U02", nombre: "Consuelo Carrillo", email: "consuelo.carrillo2022@gmail.com", rol: "Administrador", sucursalId: "S01", id_sucursal: "S01", nip: "2526", intentosFallidos: 0, bloqueado: false, adminTipo: "Ambos" }
 ];
 
 const INITIAL_CLIENTES = [];

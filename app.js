@@ -16,12 +16,20 @@ function saveData(key, data) {
   localStorage.setItem(key, JSON.stringify(data));
 }
 
-// Limpiar respaldo local legacy para obligar a consultar la base de datos SQL Server
-localStorage.removeItem('ca_usuarios');
+// Usuarios predeterminados de respaldo para modo offline / Netlify
+const DEFAULT_USUARIOS_FALLBACK = [
+  { id: "U01", id_usuario: "U01", nombre: "Administrador Universal", email: "admin@casaayala.com", rol: "Administrador", sucursalId: "S01", id_sucursal: "S01", nip: "4819", bloqueado: false, adminTipo: "Ambos" },
+  { id: "U02", id_usuario: "U02", nombre: "Consuelo Carrillo", email: "consuelo.carrillo2022@gmail.com", rol: "Administrador", sucursalId: "S01", id_sucursal: "S01", nip: "2526", bloqueado: false, adminTipo: "Ambos" }
+];
 
-// Colección global de usuarios en memoria (consultada desde la API /api/usuarios en SQL Server)
-let usuarios = [];
-let sucursales = loadData('ca_sucursales', []);
+// Colección global de usuarios en memoria (con respaldo local y sincronización remota si la API responde JSON)
+let usuarios = loadData('ca_usuarios', (typeof INITIAL_USUARIOS !== 'undefined' && INITIAL_USUARIOS.length > 0) ? INITIAL_USUARIOS : DEFAULT_USUARIOS_FALLBACK);
+if (!usuarios || usuarios.length === 0) {
+  usuarios = DEFAULT_USUARIOS_FALLBACK;
+  saveData('ca_usuarios', usuarios);
+}
+
+let sucursales = loadData('ca_sucursales', (typeof INITIAL_SUCURSALES !== 'undefined' && INITIAL_SUCURSALES.length > 0) ? INITIAL_SUCURSALES : []);
 let clientes = loadData('ca_clientes', []);
 let operadores = loadData('ca_operadores', []);
 let vendedores = loadData('ca_vendedores', []);
@@ -35,20 +43,22 @@ let productosMasterPicking = loadData('ca_productos_picking_master', []);
 async function fetchAPIData() {
   try {
     const sucursalesRes = await fetch('/api/sucursales');
-    if (sucursalesRes.ok) {
+    const contentType = sucursalesRes.headers.get('content-type') || '';
+    if (sucursalesRes.ok && contentType.includes('application/json')) {
       const dataSuc = await sucursalesRes.json();
-      if (Array.isArray(dataSuc)) {
+      if (Array.isArray(dataSuc) && dataSuc.length > 0) {
         sucursales = dataSuc;
         saveData('ca_sucursales', sucursales);
       }
     }
   } catch (err) {
-    console.warn('No se pudo cargar sucursales de la API:', err);
+    console.warn('No se pudo cargar sucursales de la API (modo estático/local activo):', err);
   }
 
   try {
     const notasRes = await fetch('/api/notas');
-    if (notasRes.ok) {
+    const contentType = notasRes.headers.get('content-type') || '';
+    if (notasRes.ok && contentType.includes('application/json')) {
       const dataNotas = await notasRes.json();
       if (Array.isArray(dataNotas)) {
         notas = dataNotas;
@@ -56,33 +66,40 @@ async function fetchAPIData() {
       }
     }
   } catch (err) {
-    console.warn('No se pudo cargar notas de la API:', err);
+    console.warn('No se pudo cargar notas de la API (modo estático/local activo):', err);
   }
 
   try {
     const usuariosRes = await fetch('/api/usuarios');
-    if (usuariosRes.ok) {
+    const contentType = usuariosRes.headers.get('content-type') || '';
+    if (usuariosRes.ok && contentType.includes('application/json')) {
       const dataUsuarios = await usuariosRes.json();
-      if (Array.isArray(dataUsuarios)) {
+      if (Array.isArray(dataUsuarios) && dataUsuarios.length > 0) {
         usuarios = dataUsuarios;
         saveData('ca_usuarios', usuarios);
-        populateLoginUserSelect();
-
-        // Sincronizar catálogo de vendedores exclusivamente con los usuarios de rol 'Vendedor'
-        const userVends = usuarios.filter(u => !u.bloqueado && u.rol === 'Vendedor');
-        if (userVends.length > 0) {
-          vendedores = userVends.map(u => ({
-            id: u.id || u.id_usuario,
-            nombre: u.nombre,
-            email: u.email,
-            telefono: u.telefono || '',
-            sucursalId: u.sucursalId || u.id_sucursal || 'S01'
-          }));
-        }
       }
     }
   } catch (err) {
-    console.warn('No se pudo cargar usuarios de la API:', err);
+    console.warn('No se pudo cargar usuarios de la API (modo estático/local activo):', err);
+  }
+
+  if (!usuarios || usuarios.length === 0) {
+    usuarios = (typeof INITIAL_USUARIOS !== 'undefined' && INITIAL_USUARIOS.length > 0) ? INITIAL_USUARIOS : DEFAULT_USUARIOS_FALLBACK;
+    saveData('ca_usuarios', usuarios);
+  }
+
+  populateLoginUserSelect();
+
+  // Sincronizar catálogo de vendedores exclusivamente con los usuarios de rol 'Vendedor'
+  const userVends = usuarios.filter(u => !u.bloqueado && u.rol === 'Vendedor');
+  if (userVends.length > 0) {
+    vendedores = userVends.map(u => ({
+      id: u.id || u.id_usuario,
+      nombre: u.nombre,
+      email: u.email,
+      telefono: u.telefono || '',
+      sucursalId: u.sucursalId || u.id_sucursal || 'S01'
+    }));
   }
 
   if (typeof refreshAllModuleDropdowns === 'function') refreshAllModuleDropdowns();
@@ -404,6 +421,7 @@ function setupLoginHandler() {
 
     if (errorMsg) errorMsg.textContent = "Verificando NIP...";
 
+    // 1. Intentar autenticación mediante API REST (si el backend Node.js / SQL Server está disponible)
     try {
       const response = await fetch('/api/login', {
         method: 'POST',
@@ -411,30 +429,81 @@ function setupLoginHandler() {
         body: JSON.stringify({ nip: nipInput, email: email })
       });
 
-      const data = await response.json();
+      const contentType = response.headers.get('content-type') || '';
+      if (response.ok && contentType.includes('application/json')) {
+        const data = await response.json();
+        if (data.success !== false && (data.user || data.id)) {
+          const user = data.user || data;
+          currentUser = user;
+          activeUserId = user.id || user.id_usuario;
+          localStorage.setItem('ca_active_user_id', activeUserId);
+          localStorage.setItem('ca_current_user', JSON.stringify(user));
 
-      if (response.ok && data.success !== false && (data.user || data.id)) {
-        const user = data.user || data;
-        currentUser = user;
-        activeUserId = user.id;
-        localStorage.setItem('ca_active_user_id', activeUserId);
-        localStorage.setItem('ca_current_user', JSON.stringify(user));
+          if (document.getElementById('login-nip')) {
+            document.getElementById('login-nip').value = '';
+          }
+          if (errorMsg) errorMsg.textContent = '';
 
-        if (document.getElementById('login-nip')) {
-          document.getElementById('login-nip').value = '';
+          checkLoginSession();
+          switchView('dashboard');
+          return;
+        } else {
+          const msg = data.message || "NIP incorrecto o usuario no registrado.";
+          if (errorMsg) errorMsg.textContent = msg;
+          alert(msg);
+          return;
         }
-        if (errorMsg) errorMsg.textContent = '';
-
-        checkLoginSession();
-        switchView('dashboard');
-      } else {
-        const msg = data.message || "NIP incorrecto o usuario no registrado.";
-        if (errorMsg) errorMsg.textContent = msg;
-        alert(msg);
       }
     } catch (err) {
-      console.error('Error al conectar con la API de login:', err);
-      const msg = "Error al conectar con el servidor de base de datos.";
+      console.warn('API /api/login no responde JSON, realizando verificación local:', err);
+    }
+
+    // 2. Fallback a Verificación Local (Netlify / Modo Estático u Offline)
+    if (!usuarios || usuarios.length === 0) {
+      usuarios = loadData('ca_usuarios', (typeof INITIAL_USUARIOS !== 'undefined' && INITIAL_USUARIOS.length > 0) ? INITIAL_USUARIOS : DEFAULT_USUARIOS_FALLBACK);
+    }
+
+    const foundUser = usuarios.find(u => {
+      const userNip = String(u.nip || '').trim();
+      const matchNip = (userNip === nipInput);
+      if (!email || email.trim() === '') return matchNip;
+
+      const userEmail = String(u.email || u.id_usuario || u.id || '').trim().toLowerCase();
+      const searchEmail = email.trim().toLowerCase();
+      const matchEmail = (userEmail === searchEmail || u.id === email || u.id_usuario === email);
+      return matchNip && matchEmail;
+    });
+
+    let targetUser = foundUser;
+    if (!targetUser) {
+      const matchedByNip = usuarios.filter(u => String(u.nip || '').trim() === nipInput);
+      if (matchedByNip.length === 1) {
+        targetUser = matchedByNip[0];
+      }
+    }
+
+    if (targetUser) {
+      if (targetUser.bloqueado) {
+        const msg = "Usuario bloqueado. Contacte al Administrador Universal.";
+        if (errorMsg) errorMsg.textContent = msg;
+        alert(msg);
+        return;
+      }
+
+      currentUser = targetUser;
+      activeUserId = targetUser.id || targetUser.id_usuario;
+      localStorage.setItem('ca_active_user_id', activeUserId);
+      localStorage.setItem('ca_current_user', JSON.stringify(targetUser));
+
+      if (document.getElementById('login-nip')) {
+        document.getElementById('login-nip').value = '';
+      }
+      if (errorMsg) errorMsg.textContent = '';
+
+      checkLoginSession();
+      switchView('dashboard');
+    } else {
+      const msg = "NIP incorrecto o usuario no registrado.";
       if (errorMsg) errorMsg.textContent = msg;
       alert(msg);
     }
@@ -2861,22 +2930,31 @@ function setupSucursalesView() {
     const nuevoId = "S" + String(sucursales.length + 1).padStart(2, '0');
     const payload = { id: nuevoId, nombre, direccion, activaFinanciera };
 
+    let apiWorked = false;
     try {
       const res = await fetch('/api/sucursales', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      if (res.ok) {
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        apiWorked = true;
         alert("Sucursal registrada exitosamente en SQL Server.");
         document.getElementById('form-sucursal').reset();
         await fetchAPIData();
-      } else {
-        alert("Error al registrar sucursal en el servidor.");
       }
     } catch (err) {
-      console.error("Error guardando sucursal:", err);
-      alert("Error de conexión al guardar sucursal.");
+      console.warn("API de sucursales no disponible:", err);
+    }
+
+    if (!apiWorked) {
+      sucursales.push(payload);
+      saveData('ca_sucursales', sucursales);
+      alert("Sucursal registrada exitosamente (Almacenamiento Local).");
+      document.getElementById('form-sucursal').reset();
+      renderSucursalesTable();
+      refreshAllModuleDropdowns();
     }
   });
 }
@@ -2913,18 +2991,27 @@ window.toggleSucursalFinanciera = async function(id) {
   }
   const s = sucursales.find(suc => suc.id === id);
   if (s) {
-    const payload = { ...s, activaFinanciera: !s.activaFinanciera };
+    s.activaFinanciera = !s.activaFinanciera;
+    let apiWorked = false;
     try {
       const res = await fetch('/api/sucursales', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(s)
       });
-      if (res.ok) {
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        apiWorked = true;
         await fetchAPIData();
       }
     } catch (err) {
-      console.error('Error al cambiar tipo de sucursal:', err);
+      console.warn('API /api/sucursales no disponible:', err);
+    }
+
+    if (!apiWorked) {
+      saveData('ca_sucursales', sucursales);
+      renderSucursalesTable();
+      refreshAllModuleDropdowns();
     }
   }
 };
@@ -2934,17 +3021,29 @@ window.removeSucursal = async function(id) {
     alert("Solo el Administrador o el Gerente pueden eliminar sucursales.");
     return;
   }
-  if (confirm("¿Estás seguro de eliminar esta sucursal de la base de datos SQL Server?")) {
+  if (confirm("¿Estás seguro de eliminar esta sucursal?")) {
+    let apiWorked = false;
     try {
       const res = await fetch(`/api/sucursales/${encodeURIComponent(id)}`, { method: 'DELETE' });
-      if (res.ok) {
-        alert("Sucursal eliminada correctamente.");
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        apiWorked = true;
+        alert("Sucursal eliminada correctamente de SQL Server.");
         await fetchAPIData();
-      } else {
-        alert("Error al eliminar sucursal en el servidor.");
       }
     } catch (err) {
-      console.error('Error al eliminar sucursal:', err);
+      console.warn('API /api/sucursales DELETE no disponible:', err);
+    }
+
+    if (!apiWorked) {
+      const idx = sucursales.findIndex(s => s.id === id);
+      if (idx !== -1) {
+        sucursales.splice(idx, 1);
+        saveData('ca_sucursales', sucursales);
+        alert("Sucursal eliminada correctamente.");
+        renderSucursalesTable();
+        refreshAllModuleDropdowns();
+      }
     }
   }
 };
@@ -2978,29 +3077,48 @@ function setupUsuariosView() {
       telefono
     };
 
+    let apiWorked = false;
     try {
       const res = await fetch('/api/usuarios', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
+      const ct = res.headers.get('content-type') || '';
 
-      if (res.ok) {
+      if (res.ok && ct.includes('application/json')) {
+        apiWorked = true;
         alert(idInput ? "Usuario actualizado con éxito en SQL Server." : "Usuario registrado con éxito en SQL Server.");
-        
         showEmailToast(
           email, 
           "Tu NIP de acceso - Casa Ayala", 
           `Hola ${nombre}, tu cuenta ha sido registrada.<br>Tu <strong>NIP de acceso de 4 dígitos</strong> es: <strong style="font-size:16px; color:#60a5fa; font-family:monospace;">${nip}</strong>`
         );
-
         await fetchAPIData();
-      } else {
-        alert("Error al guardar usuario en la base de datos.");
       }
     } catch (err) {
-      console.error('Error guardando usuario:', err);
-      alert("Error de conexión al guardar usuario.");
+      console.warn('API /api/usuarios no disponible:', err);
+    }
+
+    if (!apiWorked) {
+      if (idInput) {
+        const idx = usuarios.findIndex(u => (u.id === idInput || u.id_usuario === idInput));
+        if (idx !== -1) {
+          usuarios[idx] = { ...usuarios[idx], ...payload, id: idInput, id_usuario: idInput };
+        }
+      } else {
+        const nuevoId = "U" + String(usuarios.length + 1).padStart(2, '0');
+        usuarios.push({ ...payload, id: nuevoId, id_usuario: nuevoId, bloqueado: false });
+      }
+      saveData('ca_usuarios', usuarios);
+      alert(idInput ? "Usuario actualizado con éxito (Almacenamiento Local)." : "Usuario registrado con éxito (Almacenamiento Local).");
+      showEmailToast(
+        email, 
+        "Tu NIP de acceso - Casa Ayala", 
+        `Hola ${nombre}, tu cuenta ha sido registrada.<br>Tu <strong>NIP de acceso de 4 dígitos</strong> es: <strong style="font-size:16px; color:#60a5fa; font-family:monospace;">${nip}</strong>`
+      );
+      populateLoginUserSelect();
+      renderUsuariosTable();
     }
 
     resetUsuarioForm();
@@ -3090,18 +3208,29 @@ window.unlockUsuario = async function(id) {
   }
   const u = usuarios.find(usr => usr.id === id || usr.id_usuario === id || usr.email === id);
   if (u) {
+    u.bloqueado = false;
+    let apiWorked = false;
     try {
       const res = await fetch('/api/usuarios', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...u, bloqueado: false })
       });
-      if (res.ok) {
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        apiWorked = true;
         alert(`La cuenta de ${u.nombre} ha sido desbloqueada.`);
         await fetchAPIData();
       }
     } catch (err) {
-      console.error('Error al desbloquear usuario:', err);
+      console.warn('API /api/usuarios no disponible:', err);
+    }
+
+    if (!apiWorked) {
+      saveData('ca_usuarios', usuarios);
+      alert(`La cuenta de ${u.nombre} ha sido desbloqueada.`);
+      populateLoginUserSelect();
+      renderUsuariosTable();
     }
   }
 };
@@ -3114,13 +3243,19 @@ window.regenerateUserNip = async function(id) {
   const u = usuarios.find(usr => usr.id === id || usr.id_usuario === id || usr.email === id);
   if (u) {
     const nuevoNip = generateRandomNIP();
+    u.nip = nuevoNip;
+    u.bloqueado = false;
+
+    let apiWorked = false;
     try {
       const res = await fetch('/api/usuarios', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...u, nip: nuevoNip, bloqueado: false })
       });
-      if (res.ok) {
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        apiWorked = true;
         alert(`NIP regenerado con éxito: ${nuevoNip}. Se envió un correo de alerta.`);
         showEmailToast(
           u.email, 
@@ -3130,7 +3265,19 @@ window.regenerateUserNip = async function(id) {
         await fetchAPIData();
       }
     } catch (err) {
-      console.error('Error al regenerar NIP:', err);
+      console.warn('API /api/usuarios no disponible:', err);
+    }
+
+    if (!apiWorked) {
+      saveData('ca_usuarios', usuarios);
+      alert(`NIP regenerado con éxito: ${nuevoNip}. Se envió un correo de alerta.`);
+      showEmailToast(
+        u.email, 
+        "Tu NIP de acceso ha sido restablecido", 
+        `Hola ${u.nombre}, tu NIP ha sido regenerado por el Administrador.<br>Tu nuevo <strong>NIP de acceso</strong> es: <strong style="font-size:16px; color:#60a5fa; font-family:monospace;">${nuevoNip}</strong>`
+      );
+      populateLoginUserSelect();
+      renderUsuariosTable();
     }
   }
 };
@@ -3140,17 +3287,29 @@ window.removeUsuario = async function(id) {
     alert("Solo el Administrador puede eliminar usuarios.");
     return;
   }
-  if (confirm("¿Estás seguro de eliminar este usuario de la base de datos SQL Server?")) {
+  if (confirm("¿Estás seguro de eliminar este usuario?")) {
+    let apiWorked = false;
     try {
       const res = await fetch(`/api/usuarios/${encodeURIComponent(id)}`, { method: 'DELETE' });
-      if (res.ok) {
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        apiWorked = true;
         alert("Usuario eliminado correctamente de la base de datos.");
         await fetchAPIData();
-      } else {
-        alert("Error al eliminar usuario del servidor.");
       }
     } catch (err) {
-      console.error('Error al eliminar usuario:', err);
+      console.warn('API /api/usuarios DELETE no disponible:', err);
+    }
+
+    if (!apiWorked) {
+      const idx = usuarios.findIndex(usr => usr.id === id || usr.id_usuario === id);
+      if (idx !== -1) {
+        usuarios.splice(idx, 1);
+        saveData('ca_usuarios', usuarios);
+        alert("Usuario eliminado correctamente.");
+        populateLoginUserSelect();
+        renderUsuariosTable();
+      }
     }
   }
 };
