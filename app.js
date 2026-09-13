@@ -39,8 +39,127 @@ let notas = loadData('ca_notas', []);
 let faltantesPicking = loadData('ca_faltantes_picking', []);
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
-// Función asíncrona para sincronizar datos reales desde la base de datos SQL Server
+// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (CLOUD SYNC PARA NETLIFY Y DISPOSITIVOS MÓVILES) ---
+const CLOUD_OBJECT_ID = 'ff808181a067127101a0992aa08e062e';
+const CLOUD_SYNC_URL = 'https://api.restful-api.dev/objects/' + CLOUD_OBJECT_ID;
+
+let isSyncingWithCloud = false;
+
+function updateSyncStatusUI(statusText, isSuccess = true) {
+  const el = document.getElementById('cloud-sync-status-indicator');
+  if (el) {
+    el.textContent = statusText;
+    el.style.color = isSuccess ? '#ffffff' : '#fde047';
+  }
+}
+
+async function syncWithCloudStorage() {
+  if (isSyncingWithCloud) return;
+  isSyncingWithCloud = true;
+  try {
+    const res = await fetch(CLOUD_SYNC_URL);
+    if (res.ok) {
+      const payload = await res.json();
+      const store = payload ? (payload.data || payload) : null;
+      if (store && typeof store === 'object') {
+        mergeAllDataFromStore(store);
+        updateSyncStatusUI('☁️ Nube Sincronizada (Netlify)', true);
+      }
+    }
+  } catch (err) {
+    console.warn('[Cloud Sync] Error al sincronizar con la nube:', err);
+    updateSyncStatusUI('⚡ Modo Red Local / Servidor', false);
+  } finally {
+    isSyncingWithCloud = false;
+  }
+}
+
+async function pushToCloudStorage() {
+  try {
+    const storePayload = {
+      clientes: clientes || [],
+      operadores: operadores || [],
+      vendedores: vendedores || [],
+      proveedores: proveedores || [],
+      presupuestos: presupuestos || [],
+      notas: notas || [],
+      faltantesPicking: faltantesPicking || []
+    };
+
+    await fetch(CLOUD_SYNC_URL, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'CasaAyalaGlobalStore',
+        data: storePayload
+      })
+    });
+    updateSyncStatusUI('☁️ Nube Actualizada', true);
+  } catch (err) {
+    console.warn('[Cloud Sync] Error al publicar datos en la nube:', err);
+  }
+}
+
+function mergeAllDataFromStore(store) {
+  if (!store) return;
+  function mergeArrays(localArr, serverArr) {
+    const map = new Map();
+    (serverArr || []).forEach(item => { if (item && item.id) map.set(String(item.id), item); });
+    (localArr || []).forEach(item => { if (item && item.id) map.set(String(item.id), item); });
+    return Array.from(map.values());
+  }
+
+  let changed = false;
+
+  if (Array.isArray(store.clientes) && store.clientes.length > 0) {
+    clientes = mergeArrays(clientes, store.clientes);
+    saveData('ca_clientes', clientes);
+    changed = true;
+  }
+  if (Array.isArray(store.operadores) && store.operadores.length > 0) {
+    operadores = mergeArrays(operadores, store.operadores);
+    saveData('ca_operadores', operadores);
+    changed = true;
+  }
+  if (Array.isArray(store.vendedores) && store.vendedores.length > 0) {
+    vendedores = mergeArrays(vendedores, store.vendedores);
+    saveData('ca_vendedores', vendedores);
+    changed = true;
+  }
+  if (Array.isArray(store.proveedores) && store.proveedores.length > 0) {
+    proveedores = mergeArrays(proveedores, store.proveedores);
+    saveData('ca_proveedores', proveedores);
+    changed = true;
+  }
+  if (Array.isArray(store.presupuestos) && store.presupuestos.length > 0) {
+    presupuestos = mergeArrays(presupuestos, store.presupuestos);
+    saveData('ca_presupuestos', presupuestos);
+    changed = true;
+  }
+  if (Array.isArray(store.notas) && store.notas.length > 0) {
+    notas = mergeArrays(notas, store.notas);
+    saveData('ca_notas', notas);
+    changed = true;
+  }
+  if (Array.isArray(store.faltantesPicking) && store.faltantesPicking.length > 0) {
+    faltantesPicking = mergeArrays(faltantesPicking, store.faltantesPicking);
+    saveData('ca_faltantes_picking', faltantesPicking);
+    changed = true;
+  }
+
+  if (changed) {
+    if (typeof refreshAllModuleDropdowns === 'function') refreshAllModuleDropdowns();
+    if (typeof renderCatalogosTables === 'function') renderCatalogosTables();
+    if (typeof renderNotasFisicasList === 'function') renderNotasFisicasList();
+    if (typeof renderNotasFinancierasList === 'function') renderNotasFinancierasList();
+  }
+}
+
+// Función asíncrona para sincronizar datos reales desde la base de datos SQL Server / Nube
 async function fetchAPIData() {
+  // 1. Sincronización en la Nube Global (para Netlify, celulares 4G/5G y multi-dispositivo)
+  await syncWithCloudStorage();
+
   try {
     const sucursalesRes = await fetch('/api/sucursales');
     const contentType = sucursalesRes.headers.get('content-type') || '';
@@ -51,9 +170,7 @@ async function fetchAPIData() {
         saveData('ca_sucursales', sucursales);
       }
     }
-  } catch (err) {
-    console.warn('No se pudo cargar sucursales de la API (modo estático/local activo):', err);
-  }
+  } catch (err) {}
 
   try {
     const notasRes = await fetch('/api/notas');
@@ -65,9 +182,7 @@ async function fetchAPIData() {
         saveData('ca_notas', notas);
       }
     }
-  } catch (err) {
-    console.warn('No se pudo cargar notas de la API (modo estático/local activo):', err);
-  }
+  } catch (err) {}
 
   try {
     const usuariosRes = await fetch('/api/usuarios');
@@ -79,9 +194,7 @@ async function fetchAPIData() {
         saveData('ca_usuarios', usuarios);
       }
     }
-  } catch (err) {
-    console.warn('No se pudo cargar usuarios de la API (modo estático/local activo):', err);
-  }
+  } catch (err) {}
 
   if (!usuarios || usuarios.length === 0) {
     usuarios = (typeof INITIAL_USUARIOS !== 'undefined' && INITIAL_USUARIOS.length > 0) ? INITIAL_USUARIOS : DEFAULT_USUARIOS_FALLBACK;
@@ -90,7 +203,6 @@ async function fetchAPIData() {
 
   populateLoginUserSelect();
 
-  // Sincronizar catálogo de vendedores exclusivamente con los usuarios de rol 'Vendedor'
   const userVends = usuarios.filter(u => !u.bloqueado && u.rol === 'Vendedor');
   if (userVends.length > 0) {
     vendedores = userVends.map(u => ({
@@ -102,11 +214,76 @@ async function fetchAPIData() {
     }));
   }
 
+  try {
+    const catRes = await fetch('/api/catalogos/all');
+    const contentType = catRes.headers.get('content-type') || '';
+    if (catRes.ok && contentType.includes('application/json')) {
+      const store = await catRes.json();
+      if (store) {
+        mergeAllDataFromStore(store);
+        fetch('/api/catalogos/sync-all', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ clientes, operadores, vendedores, proveedores, presupuestos, notas, faltantesPicking })
+        }).catch(e => {});
+      }
+    }
+  } catch (err) {}
+
   if (typeof refreshAllModuleDropdowns === 'function') refreshAllModuleDropdowns();
   if (typeof renderNotasFisicasList === 'function') renderNotasFisicasList();
   if (typeof renderNotasFinancierasList === 'function') renderNotasFinancierasList();
   if (typeof renderUsuariosTable === 'function') renderUsuariosTable();
+  if (typeof renderCatalogosTables === 'function') renderCatalogosTables();
 }
+
+// Funciones globales para respaldo manual JSON (Exportar e Importar)
+window.exportarDatosJSON = function() {
+  const data = {
+    fechaExportacion: new Date().toISOString(),
+    clientes: clientes || [],
+    operadores: operadores || [],
+    vendedores: vendedores || [],
+    proveedores: proveedores || [],
+    presupuestos: presupuestos || [],
+    notas: notas || [],
+    faltantesPicking: faltantesPicking || []
+  };
+  const jsonStr = JSON.stringify(data, null, 2);
+  const blob = new Blob([jsonStr], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `casa_ayala_respaldo_${new Date().toISOString().split('T')[0]}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+window.importarDatosJSON = function(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const imported = JSON.parse(e.target.result);
+      if (imported && typeof imported === 'object') {
+        mergeAllDataFromStore(imported);
+        pushToCloudStorage();
+        alert('Datos importados y sincronizados correctamente.');
+      } else {
+        alert('El archivo no contiene un formato de respaldo válido.');
+      }
+    } catch (err) {
+      alert('Error al leer el archivo JSON: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+};
+
+// Sincronización inicial y temporizador automático cada 3 segundos (y al enfocar pantalla en móviles)
+fetchAPIData();
+setInterval(fetchAPIData, 3000);
+window.addEventListener('focus', () => { fetchAPIData(); });
 
 // Curar base de datos de notas (asegurar que el total financiero sea el descuento y no el remanente)
 let notasModificadas = false;
@@ -3370,43 +3547,73 @@ function setupCatalogosView() {
     });
   });
 
-  document.getElementById('form-cat-cliente').addEventListener('submit', (e) => {
+  document.getElementById('form-cat-cliente').addEventListener('submit', async (e) => {
     e.preventDefault();
     const nombre = document.getElementById('cat-cli-nombre').value.trim();
     const codigoInterno = document.getElementById('cat-cli-rfc').value.trim();
     const tieneDerechoDescuento = document.getElementById('cat-cli-descto').checked;
 
     const nuevoId = "C" + String(clientes.length + 1).padStart(2, '0');
-    clientes.push({ id: nuevoId, nombre, codigoInterno, tieneDerechoDescuento });
+    const newClient = { id: nuevoId, nombre, codigoInterno, tieneDerechoDescuento, eliminado: false };
+    clientes.push(newClient);
     saveData('ca_clientes', clientes);
+    pushToCloudStorage();
+
+    try {
+      await fetch('/api/clientes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newClient)
+      });
+    } catch (err) {}
     
     alert("Cliente registrado.");
     document.getElementById('form-cat-cliente').reset();
     renderCatalogosTables();
   });
 
-  document.getElementById('form-cat-operador').addEventListener('submit', (e) => {
+  document.getElementById('form-cat-operador').addEventListener('submit', async (e) => {
     e.preventDefault();
     const nombre = document.getElementById('cat-ope-nombre').value.trim();
     const puesto = document.getElementById('cat-ope-puesto').value.trim();
 
     const nuevoId = "O" + String(operadores.length + 1).padStart(2, '0');
-    operadores.push({ id: nuevoId, nombre, puesto });
+    const newOperador = { id: nuevoId, nombre, puesto, eliminado: false };
+    operadores.push(newOperador);
     saveData('ca_operadores', operadores);
+    pushToCloudStorage();
+
+    try {
+      await fetch('/api/operadores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newOperador)
+      });
+    } catch (err) {}
 
     alert("Operador registrado.");
     document.getElementById('form-cat-operador').reset();
     renderCatalogosTables();
   });
 
-  document.getElementById('form-cat-vendedor').addEventListener('submit', (e) => {
+  document.getElementById('form-cat-vendedor').addEventListener('submit', async (e) => {
     e.preventDefault();
     const nombre = document.getElementById('cat-ven-nombre').value.trim();
     const sucursalId = document.getElementById('cat-ven-sucursal').value;
 
     const nuevoId = "V" + String(vendedores.length + 1).padStart(2, '0');
-    vendedores.push({ id: nuevoId, nombre, sucursalId, userId: null });
+    const newVend = { id: nuevoId, nombre, sucursalId, userId: null, eliminado: false };
+    vendedores.push(newVend);
     saveData('ca_vendedores', vendedores);
+    pushToCloudStorage();
+
+    try {
+      await fetch('/api/vendedores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newVend)
+      });
+    } catch (err) {}
 
     alert("Vendedor registrado.");
     document.getElementById('form-cat-vendedor').reset();
@@ -3414,7 +3621,7 @@ function setupCatalogosView() {
   });
 
   // Manejo de formulario de Proveedor
-  document.getElementById('form-cat-proveedor').addEventListener('submit', (e) => {
+  document.getElementById('form-cat-proveedor').addEventListener('submit', async (e) => {
     e.preventDefault();
     const idInput = document.getElementById('cat-prov-id').value;
     const nombre = document.getElementById('cat-prov-nombre').value.trim();
@@ -3430,19 +3637,34 @@ function setupCatalogosView() {
       clientesCajon.push(cb.value);
     });
 
+    let provObj = null;
     if (idInput) {
       const idx = proveedores.findIndex(p => p.id === idInput);
       if (idx !== -1) {
         proveedores[idx] = { ...proveedores[idx], nombre, desc1, desc2, desc3, clientesCajon, fechaInicio, fechaFin, tipoPromo };
+        provObj = proveedores[idx];
         alert("Proveedor actualizado.");
       }
     } else {
       const nuevoId = "P" + String(proveedores.length + 1).padStart(2, '0');
-      proveedores.push({ id: nuevoId, nombre, desc1, desc2, desc3, clientesCajon, fechaInicio, fechaFin, tipoPromo });
+      provObj = { id: nuevoId, nombre, desc1, desc2, desc3, clientesCajon, fechaInicio, fechaFin, tipoPromo, eliminado: false };
+      proveedores.push(provObj);
       alert("Proveedor registrado.");
     }
 
     saveData('ca_proveedores', proveedores);
+    pushToCloudStorage();
+
+    if (provObj) {
+      try {
+        await fetch('/api/proveedores', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(provObj)
+        });
+      } catch (err) {}
+    }
+
     resetProveedorForm();
     renderCatalogosTables();
   });
@@ -3591,7 +3813,7 @@ function renderCatalogosTables() {
   }
 }
 
-window.removeCliente = function(id) {
+window.removeCliente = async function(id) {
   if (currentUser.rol !== 'Administrador' && currentUser.rol !== 'Gerente') {
     alert("Solo el Administrador o el Gerente pueden eliminar clientes.");
     return;
@@ -3601,12 +3823,16 @@ window.removeCliente = function(id) {
     if (idx !== -1) {
       clientes[idx].eliminado = true;
       saveData('ca_clientes', clientes);
+      pushToCloudStorage();
+      try {
+        await fetch('/api/clientes/' + encodeURIComponent(id), { method: 'DELETE' });
+      } catch (e) {}
       renderCatalogosTables();
     }
   }
 };
 
-window.removeOperador = function(id) {
+window.removeOperador = async function(id) {
   if (currentUser.rol !== 'Administrador' && currentUser.rol !== 'Gerente') {
     alert("Solo el Administrador o el Gerente pueden eliminar operadores.");
     return;
@@ -3616,12 +3842,14 @@ window.removeOperador = function(id) {
     if (idx !== -1) {
       operadores[idx].eliminado = true;
       saveData('ca_operadores', operadores);
+      pushToCloudStorage();
+      try { await fetch('/api/operadores/' + encodeURIComponent(id), { method: 'DELETE' }); } catch (e) {}
       renderCatalogosTables();
     }
   }
 };
 
-window.removeVendedor = function(id) {
+window.removeVendedor = async function(id) {
   if (currentUser.rol !== 'Administrador' && currentUser.rol !== 'Gerente') {
     alert("Solo el Administrador o el Gerente pueden eliminar vendedores.");
     return;
@@ -3631,6 +3859,25 @@ window.removeVendedor = function(id) {
     if (idx !== -1) {
       vendedores[idx].eliminado = true;
       saveData('ca_vendedores', vendedores);
+      pushToCloudStorage();
+      try { await fetch('/api/vendedores/' + encodeURIComponent(id), { method: 'DELETE' }); } catch (e) {}
+      renderCatalogosTables();
+    }
+  }
+};
+
+window.removeProveedor = async function(id) {
+  if (currentUser.rol !== 'Administrador' && currentUser.rol !== 'Gerente') {
+    alert("Solo el Administrador o el Gerente pueden eliminar proveedores.");
+    return;
+  }
+  if (confirm("¿Estás seguro de eliminar este proveedor?")) {
+    const idx = proveedores.findIndex(p => p.id === id);
+    if (idx !== -1) {
+      proveedores[idx].eliminado = true;
+      saveData('ca_proveedores', proveedores);
+      pushToCloudStorage();
+      try { await fetch('/api/proveedores/' + encodeURIComponent(id), { method: 'DELETE' }); } catch (e) {}
       renderCatalogosTables();
     }
   }

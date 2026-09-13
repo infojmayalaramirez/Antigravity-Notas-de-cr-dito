@@ -2,6 +2,46 @@ const express = require('express');
 const cors = require('cors');
 const sql = require('mssql');
 const path = require('path');
+const os = require('os');
+const fs = require('fs');
+
+const STORE_PATH = path.join(__dirname, 'catalog_store.json');
+
+function loadStoreFromFile() {
+    try {
+        if (fs.existsSync(STORE_PATH)) {
+            const content = fs.readFileSync(STORE_PATH, 'utf8');
+            const data = JSON.parse(content);
+            return {
+                clientes: Array.isArray(data.clientes) ? data.clientes : [],
+                operadores: Array.isArray(data.operadores) ? data.operadores : [],
+                vendedores: Array.isArray(data.vendedores) ? data.vendedores : [],
+                proveedores: Array.isArray(data.proveedores) ? data.proveedores : [],
+                presupuestos: Array.isArray(data.presupuestos) ? data.presupuestos : []
+            };
+        }
+    } catch (err) {
+        console.warn('[Server Store] Error al leer catalog_store.json:', err.message);
+    }
+    return { clientes: [], operadores: [], vendedores: [], proveedores: [], presupuestos: [] };
+}
+
+function saveStoreToFile(storeData) {
+    try {
+        fs.writeFileSync(STORE_PATH, JSON.stringify(storeData, null, 2), 'utf8');
+    } catch (err) {
+        console.warn('[Server Store] Error al guardar catalog_store.json:', err.message);
+    }
+}
+
+let catalogStore = loadStoreFromFile();
+
+function mergeArray(target, source) {
+    const map = new Map();
+    (target || []).forEach(item => { if (item && item.id) map.set(item.id, item); });
+    (source || []).forEach(item => { if (item && item.id) map.set(item.id, item); });
+    return Array.from(map.values());
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -64,6 +104,63 @@ async function ensureDatabaseSchema() {
             BEGIN
                 INSERT INTO dbo.Sucursales (id_sucursal, nombre, direccion, activa_financiera)
                 VALUES ('S01', 'SDO6-GDL', 'Guadalajara Centro', 1);
+            END
+        `);
+
+        // 4. Crear tablas de catálogos si no existen
+        await pool.request().query(`
+            IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Clientes')
+            BEGIN
+                CREATE TABLE dbo.Clientes (
+                    id_cliente VARCHAR(50) PRIMARY KEY,
+                    nombre VARCHAR(255) NOT NULL,
+                    codigo_interno VARCHAR(50) NULL,
+                    tiene_derecho_descuento BIT DEFAULT 0,
+                    eliminado BIT DEFAULT 0
+                );
+            END
+            IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Operadores')
+            BEGIN
+                CREATE TABLE dbo.Operadores (
+                    id_operador VARCHAR(50) PRIMARY KEY,
+                    nombre VARCHAR(255) NOT NULL,
+                    puesto VARCHAR(255) NULL,
+                    eliminado BIT DEFAULT 0
+                );
+            END
+            IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Vendedores')
+            BEGIN
+                CREATE TABLE dbo.Vendedores (
+                    id_vendedor VARCHAR(50) PRIMARY KEY,
+                    nombre VARCHAR(255) NOT NULL,
+                    id_sucursal VARCHAR(50) NULL,
+                    id_usuario VARCHAR(50) NULL,
+                    eliminado BIT DEFAULT 0
+                );
+            END
+            IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Proveedores')
+            BEGIN
+                CREATE TABLE dbo.Proveedores (
+                    id_proveedor VARCHAR(50) PRIMARY KEY,
+                    nombre VARCHAR(255) NOT NULL,
+                    desc1 DECIMAL(18,2) DEFAULT 0,
+                    desc2 DECIMAL(18,2) DEFAULT 0,
+                    desc3 DECIMAL(18,2) DEFAULT 0,
+                    clientes_cajon_json VARCHAR(MAX) NULL,
+                    fecha_inicio VARCHAR(50) NULL,
+                    fecha_fin VARCHAR(50) NULL,
+                    tipo_promo VARCHAR(50) NULL,
+                    eliminado BIT DEFAULT 0
+                );
+            END
+            IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Presupuestos')
+            BEGIN
+                CREATE TABLE dbo.Presupuestos (
+                    id_presupuesto VARCHAR(50) PRIMARY KEY,
+                    id_sucursal VARCHAR(50) NOT NULL,
+                    mes_anio VARCHAR(50) NOT NULL,
+                    monto DECIMAL(18,2) DEFAULT 0
+                );
             END
         `);
 
@@ -337,6 +434,236 @@ app.delete('/api/sucursales/:id', async (req, res) => {
     }
 });
 
+// --- 2.5 ENDPOINTS DE TODOS LOS CATÁLOGOS CON PERSISTENCIA ---
+
+// GET /api/catalogos/all - Consulta unificada de todos los catálogos
+app.get('/api/catalogos/all', async (req, res) => {
+    try {
+        const pool = await sql.connect(dbConfig);
+        const [cliRes, opeRes, venRes, provRes, presRes] = await Promise.all([
+            pool.request().query('SELECT * FROM dbo.Clientes'),
+            pool.request().query('SELECT * FROM dbo.Operadores'),
+            pool.request().query('SELECT * FROM dbo.Vendedores'),
+            pool.request().query('SELECT * FROM dbo.Proveedores'),
+            pool.request().query('SELECT * FROM dbo.Presupuestos')
+        ]);
+
+        const dbStore = {
+            clientes: cliRes.recordset.map(c => ({ id: c.id_cliente, nombre: c.nombre, codigoInterno: c.codigo_interno || '', tieneDerechoDescuento: !!c.tiene_derecho_descuento, eliminado: !!c.eliminado })),
+            operadores: opeRes.recordset.map(o => ({ id: o.id_operador, nombre: o.nombre, puesto: o.puesto || '', eliminado: !!o.eliminado })),
+            vendedores: venRes.recordset.map(v => ({ id: v.id_vendedor, nombre: v.nombre, sucursalId: v.id_sucursal || 'S01', userId: v.id_usuario || null, eliminado: !!v.eliminado })),
+            proveedores: provRes.recordset.map(p => ({
+                id: p.id_proveedor,
+                nombre: p.nombre,
+                desc1: parseFloat(p.desc1 || 0),
+                desc2: parseFloat(p.desc2 || 0),
+                desc3: parseFloat(p.desc3 || 0),
+                clientesCajon: p.clientes_cajon_json ? JSON.parse(p.clientes_cajon_json) : [],
+                fechaInicio: p.fecha_inicio || '',
+                fechaFin: p.fecha_fin || '',
+                tipoPromo: p.tipo_promo || 'clientes_exclusivos',
+                eliminado: !!p.eliminado
+            })),
+            presupuestos: presRes.recordset.map(pr => ({ id: pr.id_presupuesto, sucursalId: pr.id_sucursal, mesAnio: pr.mes_anio, monto: parseFloat(pr.monto || 0) }))
+        };
+
+        catalogStore.clientes = mergeArray(catalogStore.clientes, dbStore.clientes);
+        catalogStore.operadores = mergeArray(catalogStore.operadores, dbStore.operadores);
+        catalogStore.vendedores = mergeArray(catalogStore.vendedores, dbStore.vendedores);
+        catalogStore.proveedores = mergeArray(catalogStore.proveedores, dbStore.proveedores);
+        catalogStore.presupuestos = mergeArray(catalogStore.presupuestos, dbStore.presupuestos);
+        saveStoreToFile(catalogStore);
+
+        return res.json(catalogStore);
+    } catch (err) {
+        console.warn('[SQL Server] Error al consultar catálogos (usando respaldo en servidor):', err.message);
+        return res.json(catalogStore);
+    }
+});
+
+// POST /api/catalogos/sync-all - Sincronización masiva de todos los catálogos desde dispositivos
+app.post('/api/catalogos/sync-all', async (req, res) => {
+    try {
+        const payload = req.body || {};
+        if (payload.clientes) catalogStore.clientes = mergeArray(catalogStore.clientes, payload.clientes);
+        if (payload.operadores) catalogStore.operadores = mergeArray(catalogStore.operadores, payload.operadores);
+        if (payload.vendedores) catalogStore.vendedores = mergeArray(catalogStore.vendedores, payload.vendedores);
+        if (payload.proveedores) catalogStore.proveedores = mergeArray(catalogStore.proveedores, payload.proveedores);
+        if (payload.presupuestos) catalogStore.presupuestos = mergeArray(catalogStore.presupuestos, payload.presupuestos);
+
+        saveStoreToFile(catalogStore);
+
+        // Intentar reflejar en SQL Server
+        try {
+            const pool = await sql.connect(dbConfig);
+            for (const c of catalogStore.clientes) {
+                await pool.request()
+                    .input('id', sql.VarChar, c.id)
+                    .input('nombre', sql.VarChar, c.nombre)
+                    .input('codigo', sql.VarChar, c.codigoInterno || '')
+                    .input('descto', sql.Bit, c.tieneDerechoDescuento ? 1 : 0)
+                    .input('eliminado', sql.Bit, c.eliminado ? 1 : 0)
+                    .query(`
+                        IF EXISTS (SELECT 1 FROM dbo.Clientes WHERE id_cliente = @id)
+                            UPDATE dbo.Clientes SET nombre=@nombre, codigo_interno=@codigo, tiene_derecho_descuento=@descto, eliminado=@eliminado WHERE id_cliente=@id
+                        ELSE
+                            INSERT INTO dbo.Clientes (id_cliente, nombre, codigo_interno, tiene_derecho_descuento, eliminado) VALUES (@id, @nombre, @codigo, @descto, @eliminado)
+                    `);
+            }
+            for (const o of catalogStore.operadores) {
+                await pool.request()
+                    .input('id', sql.VarChar, o.id)
+                    .input('nombre', sql.VarChar, o.nombre)
+                    .input('puesto', sql.VarChar, o.puesto || '')
+                    .input('eliminado', sql.Bit, o.eliminado ? 1 : 0)
+                    .query(`
+                        IF EXISTS (SELECT 1 FROM dbo.Operadores WHERE id_operador = @id)
+                            UPDATE dbo.Operadores SET nombre=@nombre, puesto=@puesto, eliminado=@eliminado WHERE id_operador=@id
+                        ELSE
+                            INSERT INTO dbo.Operadores (id_operador, nombre, puesto, eliminado) VALUES (@id, @nombre, @puesto, @eliminado)
+                    `);
+            }
+            for (const v of catalogStore.vendedores) {
+                await pool.request()
+                    .input('id', sql.VarChar, v.id)
+                    .input('nombre', sql.VarChar, v.nombre)
+                    .input('sucursal', sql.VarChar, v.sucursalId || 'S01')
+                    .input('usuario', sql.VarChar, v.userId || null)
+                    .input('eliminado', sql.Bit, v.eliminado ? 1 : 0)
+                    .query(`
+                        IF EXISTS (SELECT 1 FROM dbo.Vendedores WHERE id_vendedor = @id)
+                            UPDATE dbo.Vendedores SET nombre=@nombre, id_sucursal=@sucursal, id_usuario=@usuario, eliminado=@eliminado WHERE id_vendedor=@id
+                        ELSE
+                            INSERT INTO dbo.Vendedores (id_vendedor, nombre, id_sucursal, id_usuario, eliminado) VALUES (@id, @nombre, @sucursal, @usuario, @eliminado)
+                    `);
+            }
+            for (const p of catalogStore.proveedores) {
+                await pool.request()
+                    .input('id', sql.VarChar, p.id)
+                    .input('nombre', sql.VarChar, p.nombre)
+                    .input('desc1', sql.Decimal(18,2), p.desc1 || 0)
+                    .input('desc2', sql.Decimal(18,2), p.desc2 || 0)
+                    .input('desc3', sql.Decimal(18,2), p.desc3 || 0)
+                    .input('cajon', sql.VarChar, JSON.stringify(p.clientesCajon || []))
+                    .input('inicio', sql.VarChar, p.fechaInicio || '')
+                    .input('fin', sql.VarChar, p.fechaFin || '')
+                    .input('promo', sql.VarChar, p.tipoPromo || 'clientes_exclusivos')
+                    .input('eliminado', sql.Bit, p.eliminado ? 1 : 0)
+                    .query(`
+                        IF EXISTS (SELECT 1 FROM dbo.Proveedores WHERE id_proveedor = @id)
+                            UPDATE dbo.Proveedores SET nombre=@nombre, desc1=@desc1, desc2=@desc2, desc3=@desc3, clientes_cajon_json=@cajon, fecha_inicio=@inicio, fecha_fin=@fin, tipo_promo=@promo, eliminado=@eliminado WHERE id_proveedor=@id
+                        ELSE
+                            INSERT INTO dbo.Proveedores (id_proveedor, nombre, desc1, desc2, desc3, clientes_cajon_json, fecha_inicio, fecha_fin, tipo_promo, eliminado) VALUES (@id, @nombre, @desc1, @desc2, @desc3, @cajon, @inicio, @fin, @promo, @eliminado)
+                    `);
+            }
+        } catch (sqlErr) {
+            console.warn('[SQL Server] No se pudo guardar sync en SQL:', sqlErr.message);
+        }
+
+        return res.json({ success: true, store: catalogStore });
+    } catch (error) {
+        console.error('Error en POST /api/catalogos/sync-all:', error.message);
+        return res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Endpoints individuales de Clientes
+app.get('/api/clientes', (req, res) => res.json(catalogStore.clientes));
+app.post('/api/clientes', (req, res) => {
+    const item = req.body;
+    if (item && item.id) {
+        const idx = catalogStore.clientes.findIndex(c => c.id === item.id);
+        if (idx !== -1) catalogStore.clientes[idx] = item;
+        else catalogStore.clientes.push(item);
+        saveStoreToFile(catalogStore);
+    }
+    return res.json({ success: true, item });
+});
+app.post('/api/clientes/sync', (req, res) => {
+    if (Array.isArray(req.body)) {
+        catalogStore.clientes = mergeArray(catalogStore.clientes, req.body);
+        saveStoreToFile(catalogStore);
+    }
+    return res.json({ success: true, count: catalogStore.clientes.length });
+});
+app.delete('/api/clientes/:id', (req, res) => {
+    const id = req.params.id;
+    const item = catalogStore.clientes.find(c => c.id === id);
+    if (item) item.eliminado = true;
+    saveStoreToFile(catalogStore);
+    return res.json({ success: true });
+});
+
+// Endpoints individuales de Operadores
+app.get('/api/operadores', (req, res) => res.json(catalogStore.operadores));
+app.post('/api/operadores', (req, res) => {
+    const item = req.body;
+    if (item && item.id) {
+        const idx = catalogStore.operadores.findIndex(o => o.id === item.id);
+        if (idx !== -1) catalogStore.operadores[idx] = item;
+        else catalogStore.operadores.push(item);
+        saveStoreToFile(catalogStore);
+    }
+    return res.json({ success: true, item });
+});
+app.delete('/api/operadores/:id', (req, res) => {
+    const item = catalogStore.operadores.find(o => o.id === req.params.id);
+    if (item) item.eliminado = true;
+    saveStoreToFile(catalogStore);
+    return res.json({ success: true });
+});
+
+// Endpoints individuales de Vendedores
+app.get('/api/vendedores', (req, res) => res.json(catalogStore.vendedores));
+app.post('/api/vendedores', (req, res) => {
+    const item = req.body;
+    if (item && item.id) {
+        const idx = catalogStore.vendedores.findIndex(v => v.id === item.id);
+        if (idx !== -1) catalogStore.vendedores[idx] = item;
+        else catalogStore.vendedores.push(item);
+        saveStoreToFile(catalogStore);
+    }
+    return res.json({ success: true, item });
+});
+app.delete('/api/vendedores/:id', (req, res) => {
+    const item = catalogStore.vendedores.find(v => v.id === req.params.id);
+    if (item) item.eliminado = true;
+    saveStoreToFile(catalogStore);
+    return res.json({ success: true });
+});
+
+// Endpoints individuales de Proveedores
+app.get('/api/proveedores', (req, res) => res.json(catalogStore.proveedores));
+app.post('/api/proveedores', (req, res) => {
+    const item = req.body;
+    if (item && item.id) {
+        const idx = catalogStore.proveedores.findIndex(p => p.id === item.id);
+        if (idx !== -1) catalogStore.proveedores[idx] = item;
+        else catalogStore.proveedores.push(item);
+        saveStoreToFile(catalogStore);
+    }
+    return res.json({ success: true, item });
+});
+app.delete('/api/proveedores/:id', (req, res) => {
+    const item = catalogStore.proveedores.find(p => p.id === req.params.id);
+    if (item) item.eliminado = true;
+    saveStoreToFile(catalogStore);
+    return res.json({ success: true });
+});
+
+// Endpoints individuales de Presupuestos
+app.get('/api/presupuestos', (req, res) => res.json(catalogStore.presupuestos));
+app.post('/api/presupuestos', (req, res) => {
+    const item = req.body;
+    if (item && item.id) {
+        const idx = catalogStore.presupuestos.findIndex(p => p.id === item.id);
+        if (idx !== -1) catalogStore.presupuestos[idx] = item;
+        else catalogStore.presupuestos.push(item);
+        saveStoreToFile(catalogStore);
+    }
+    return res.json({ success: true, item });
+});
+
 // --- 3. ENDPOINTS NOTAS DE CRÉDITO ---
 // GET /api/notas - Consulta de notas de crédito desde dbo.Notas
 app.get('/api/notas', async (req, res) => {
@@ -556,7 +883,16 @@ app.get('/', (req, res) => {
 });
 
 // Levantar el servidor y ejecutar mantenimiento de esquema
-app.listen(PORT, async () => {
-    console.log(`Servidor Node.js corriendo en http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', async () => {
+    console.log(`Servidor Node.js corriendo localmente en: http://localhost:${PORT}`);
+    const interfaces = os.networkInterfaces();
+    console.log('--- ACCESO DESDE OTROS DISPOSITIVOS Y COMPUTADORAS EN LA RED ---');
+    for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name]) {
+            if (iface.family === 'IPv4' && !iface.internal) {
+                console.log(` -> http://${iface.address}:${PORT}`);
+            }
+        }
+    }
     await ensureDatabaseSchema();
 });

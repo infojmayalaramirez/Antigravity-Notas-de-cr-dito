@@ -138,6 +138,9 @@
 
         <!-- Sesión de Usuario Autenticado -->
         <div class="user-selector-container">
+          <span id="cloud-sync-status-indicator" style="font-size: 11px; font-weight: 600; background: rgba(255,255,255,0.15); padding: 4px 8px; border-radius: 4px; color: #ffffff; margin-right: 8px;">
+            <i class="fa-solid fa-cloud"></i> ☁️ Nube Activa
+          </span>
           <span style="font-weight:600; color:var(--primary-color);" id="header-user-info">
             <i class="fa-solid fa-circle-user"></i> Cargando...
           </span>
@@ -1475,9 +1478,18 @@
               style="border-bottom-left-radius:0; border-bottom-right-radius:0; border-bottom:none;">Vendedores</button>
             <button class="btn btn-secondary btn-sm" id="tab-cat-proveedores"
               style="border-bottom-left-radius:0; border-bottom-right-radius:0; border-bottom:none;">Proveedores</button>
+            <button class="btn btn-secondary btn-sm" onclick="fetchAPIData().then(() => alert('Catálogos sincronizados correctamente.'))"
+              style="margin-left: auto; border-bottom-left-radius:0; border-bottom-right-radius:0; border-bottom:none; font-weight:600;"><i
+                class="fa-solid fa-rotate"></i> Sincronizar Catálogos</button>
+            <button class="btn btn-secondary btn-sm" onclick="exportarDatosJSON()"
+              style="border-bottom-left-radius:0; border-bottom-right-radius:0; border-bottom:none; font-weight:600;"><i
+                class="fa-solid fa-file-export"></i> Exportar Respaldo</button>
+            <label class="btn btn-secondary btn-sm"
+              style="border-bottom-left-radius:0; border-bottom-right-radius:0; border-bottom:none; font-weight:600; cursor:pointer; margin-bottom:0;"><i
+                class="fa-solid fa-file-import"></i> Importar Respaldo <input type="file" accept=".json" onchange="importarDatosJSON(event)" style="display:none;"></label>
             <button class="btn btn-secondary btn-sm" onclick="clearCatalogosData()"
-              style="margin-left: auto; border-bottom-left-radius:0; border-bottom-right-radius:0; border-bottom:none; color: var(--danger-color); font-weight:600;"><i
-                class="fa-solid fa-trash-arrow-up"></i> Limpiar Catálogos de Prueba (Empezar de Cero)</button>
+              style="border-bottom-left-radius:0; border-bottom-right-radius:0; border-bottom:none; color: var(--danger-color); font-weight:600;"><i
+                class="fa-solid fa-trash-arrow-up"></i> Limpiar Catálogos</button>
           </div>
 
           <!-- A. TAB CLIENTES -->
