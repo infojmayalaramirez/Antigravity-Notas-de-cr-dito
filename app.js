@@ -30,14 +30,57 @@ if (!usuarios || usuarios.length === 0) {
 }
 
 let sucursales = loadData('ca_sucursales', (typeof INITIAL_SUCURSALES !== 'undefined' && INITIAL_SUCURSALES.length > 0) ? INITIAL_SUCURSALES : []);
-let clientes = loadData('ca_clientes', []);
-let operadores = loadData('ca_operadores', []);
-let vendedores = loadData('ca_vendedores', []);
-let presupuestos = loadData('ca_presupuestos', []);
-let proveedores = loadData('ca_proveedores', []);
+let clientes = loadData('ca_clientes', (typeof INITIAL_CLIENTES !== 'undefined' && INITIAL_CLIENTES.length > 0) ? INITIAL_CLIENTES : []);
+let operadores = loadData('ca_operadores', (typeof INITIAL_OPERADORES !== 'undefined' && INITIAL_OPERADORES.length > 0) ? INITIAL_OPERADORES : []);
+let vendedores = loadData('ca_vendedores', (typeof INITIAL_VENDEDORES !== 'undefined' && INITIAL_VENDEDORES.length > 0) ? INITIAL_VENDEDORES : []);
+let presupuestos = loadData('ca_presupuestos', (typeof INITIAL_PRESUPUESTOS !== 'undefined' && INITIAL_PRESUPUESTOS.length > 0) ? INITIAL_PRESUPUESTOS : []);
+let proveedores = loadData('ca_proveedores', (typeof INITIAL_PROVEEDORES !== 'undefined' && INITIAL_PROVEEDORES.length > 0) ? INITIAL_PROVEEDORES : []);
 let notas = loadData('ca_notas', []);
 let faltantesPicking = loadData('ca_faltantes_picking', []);
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
+
+function ensureSeedDataMerged() {
+  let updated = false;
+  if (typeof INITIAL_CLIENTES !== 'undefined' && Array.isArray(INITIAL_CLIENTES) && INITIAL_CLIENTES.length > 0) {
+    const map = new Map();
+    (clientes || []).forEach(c => { if (c && c.id) map.set(String(c.id), c); });
+    INITIAL_CLIENTES.forEach(c => {
+      if (c && c.id && !map.has(String(c.id))) {
+        map.set(String(c.id), c);
+        updated = true;
+      }
+    });
+    clientes = Array.from(map.values());
+    if (updated) saveData('ca_clientes', clientes);
+  }
+  if (typeof INITIAL_OPERADORES !== 'undefined' && Array.isArray(INITIAL_OPERADORES) && INITIAL_OPERADORES.length > 0) {
+    let opUpdated = false;
+    const map = new Map();
+    (operadores || []).forEach(o => { if (o && o.id) map.set(String(o.id), o); });
+    INITIAL_OPERADORES.forEach(o => {
+      if (o && o.id && !map.has(String(o.id))) {
+        map.set(String(o.id), o);
+        opUpdated = true;
+      }
+    });
+    operadores = Array.from(map.values());
+    if (opUpdated) saveData('ca_operadores', operadores);
+  }
+  if (typeof INITIAL_PROVEEDORES !== 'undefined' && Array.isArray(INITIAL_PROVEEDORES) && INITIAL_PROVEEDORES.length > 0) {
+    let provUpdated = false;
+    const map = new Map();
+    (proveedores || []).forEach(p => { if (p && p.id) map.set(String(p.id), p); });
+    INITIAL_PROVEEDORES.forEach(p => {
+      if (p && p.id && !map.has(String(p.id))) {
+        map.set(String(p.id), p);
+        provUpdated = true;
+      }
+    });
+    proveedores = Array.from(map.values());
+    if (provUpdated) saveData('ca_proveedores', proveedores);
+  }
+}
+ensureSeedDataMerged();
 
 // --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (CLOUD SYNC PARA NETLIFY Y DISPOSITIVOS MÓVILES) ---
 const CLOUD_OBJECT_ID = 'ff808181a067127101a0992aa08e062e';
@@ -104,8 +147,16 @@ function mergeAllDataFromStore(store) {
   if (!store) return;
   function mergeArrays(localArr, serverArr) {
     const map = new Map();
-    (serverArr || []).forEach(item => { if (item && item.id) map.set(String(item.id), item); });
     (localArr || []).forEach(item => { if (item && item.id) map.set(String(item.id), item); });
+    (serverArr || []).forEach(item => {
+      if (item && item.id) {
+        if (map.has(String(item.id))) {
+          map.set(String(item.id), { ...map.get(String(item.id)), ...item });
+        } else {
+          map.set(String(item.id), item);
+        }
+      }
+    });
     return Array.from(map.values());
   }
 
@@ -280,10 +331,11 @@ window.importarDatosJSON = function(event) {
   reader.readAsText(file);
 };
 
-// Sincronización inicial y temporizador automático cada 3 segundos (y al enfocar pantalla en móviles)
+// Sincronización inicial y temporizador automático cada 30 segundos (y al enfocar pantalla o cambiar pestaña)
 fetchAPIData();
-setInterval(fetchAPIData, 3000);
+setInterval(fetchAPIData, 30000);
 window.addEventListener('focus', () => { fetchAPIData(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') fetchAPIData(); });
 
 // Curar base de datos de notas (asegurar que el total financiero sea el descuento y no el remanente)
 let notasModificadas = false;
