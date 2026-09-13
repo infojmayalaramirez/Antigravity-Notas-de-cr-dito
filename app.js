@@ -39,49 +39,6 @@ let notas = loadData('ca_notas', []);
 let faltantesPicking = loadData('ca_faltantes_picking', []);
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
-function ensureSeedDataMerged() {
-  let updated = false;
-  if (typeof INITIAL_CLIENTES !== 'undefined' && Array.isArray(INITIAL_CLIENTES) && INITIAL_CLIENTES.length > 0) {
-    const map = new Map();
-    (clientes || []).forEach(c => { if (c && c.id) map.set(String(c.id), c); });
-    INITIAL_CLIENTES.forEach(c => {
-      if (c && c.id && !map.has(String(c.id))) {
-        map.set(String(c.id), c);
-        updated = true;
-      }
-    });
-    clientes = Array.from(map.values());
-    if (updated) saveData('ca_clientes', clientes);
-  }
-  if (typeof INITIAL_OPERADORES !== 'undefined' && Array.isArray(INITIAL_OPERADORES) && INITIAL_OPERADORES.length > 0) {
-    let opUpdated = false;
-    const map = new Map();
-    (operadores || []).forEach(o => { if (o && o.id) map.set(String(o.id), o); });
-    INITIAL_OPERADORES.forEach(o => {
-      if (o && o.id && !map.has(String(o.id))) {
-        map.set(String(o.id), o);
-        opUpdated = true;
-      }
-    });
-    operadores = Array.from(map.values());
-    if (opUpdated) saveData('ca_operadores', operadores);
-  }
-  if (typeof INITIAL_PROVEEDORES !== 'undefined' && Array.isArray(INITIAL_PROVEEDORES) && INITIAL_PROVEEDORES.length > 0) {
-    let provUpdated = false;
-    const map = new Map();
-    (proveedores || []).forEach(p => { if (p && p.id) map.set(String(p.id), p); });
-    INITIAL_PROVEEDORES.forEach(p => {
-      if (p && p.id && !map.has(String(p.id))) {
-        map.set(String(p.id), p);
-        provUpdated = true;
-      }
-    });
-    proveedores = Array.from(map.values());
-    if (provUpdated) saveData('ca_proveedores', proveedores);
-  }
-}
-ensureSeedDataMerged();
-
 // --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (CLOUD SYNC PARA NETLIFY Y DISPOSITIVOS MÓVILES) ---
 const CLOUD_OBJECT_ID = 'ff808181a067127101a0992aa08e062e';
 const CLOUD_SYNC_URL = 'https://api.restful-api.dev/objects/' + CLOUD_OBJECT_ID;
