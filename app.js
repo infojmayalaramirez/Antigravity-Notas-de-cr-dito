@@ -39,9 +39,12 @@ let notas = loadData('ca_notas', []);
 let faltantesPicking = loadData('ca_faltantes_picking', []);
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
-// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (CLOUD SYNC PARA NETLIFY Y DISPOSITIVOS MÓVILES) ---
-const CLOUD_OBJECT_ID = 'ff808181a067127101a0992aa08e062e';
-const CLOUD_SYNC_URL = 'https://api.restful-api.dev/objects/' + CLOUD_OBJECT_ID;
+// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (MULTI-ENDPOINT CLOUD SYNC PARA NETLIFY Y MÓVILES) ---
+const CLOUD_SYNC_ENDPOINTS = [
+  'https://api.restful-api.dev/objects/ff808181a067127101a0992aa08e062e',
+  'https://crudcrud.com/api/69c1452c12544c3fb83a92efdcbf59b4/store',
+  'https://crudcrud.com/api/afd772d634324c1d82d0652bdc0fb2e8/store'
+];
 
 let isSyncingWithCloud = false;
 
@@ -57,46 +60,57 @@ async function syncWithCloudStorage() {
   if (isSyncingWithCloud) return;
   isSyncingWithCloud = true;
   try {
-    const res = await fetch(CLOUD_SYNC_URL);
-    if (res.ok) {
-      const payload = await res.json();
-      const store = payload ? (payload.data || payload) : null;
-      if (store && typeof store === 'object') {
-        mergeAllDataFromStore(store);
-        updateSyncStatusUI('☁️ Nube Sincronizada (Netlify)', true);
-      }
+    for (let url of CLOUD_SYNC_ENDPOINTS) {
+      try {
+        const res = await fetch(url);
+        if (res.ok) {
+          const payload = await res.json();
+          const store = Array.isArray(payload) ? (payload.length > 0 ? payload[payload.length - 1] : null) : (payload ? (payload.data || payload) : null);
+          if (store && typeof store === 'object') {
+            mergeAllDataFromStore(store);
+            updateSyncStatusUI('☁️ Nube Sincronizada (Netlify)', true);
+            return;
+          }
+        }
+      } catch (e) {}
     }
+    updateSyncStatusUI('⚡ Modo Red Local / Servidor', false);
   } catch (err) {
     console.warn('[Cloud Sync] Error al sincronizar con la nube:', err);
-    updateSyncStatusUI('⚡ Modo Red Local / Servidor', false);
   } finally {
     isSyncingWithCloud = false;
   }
 }
 
 async function pushToCloudStorage() {
-  try {
-    const storePayload = {
-      clientes: clientes || [],
-      operadores: operadores || [],
-      vendedores: vendedores || [],
-      proveedores: proveedores || [],
-      presupuestos: presupuestos || [],
-      notas: notas || [],
-      faltantesPicking: faltantesPicking || []
-    };
+  const storePayload = {
+    clientes: clientes || [],
+    operadores: operadores || [],
+    vendedores: vendedores || [],
+    proveedores: proveedores || [],
+    presupuestos: presupuestos || [],
+    notas: notas || [],
+    faltantesPicking: faltantesPicking || []
+  };
 
-    await fetch(CLOUD_SYNC_URL, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: 'CasaAyalaGlobalStore',
-        data: storePayload
-      })
-    });
-    updateSyncStatusUI('☁️ Nube Actualizada', true);
-  } catch (err) {
-    console.warn('[Cloud Sync] Error al publicar datos en la nube:', err);
+  for (let url of CLOUD_SYNC_ENDPOINTS) {
+    try {
+      const isCrud = url.includes('crudcrud.com');
+      let method = isCrud ? 'POST' : 'PUT';
+      let body = isCrud ? JSON.stringify(storePayload) : JSON.stringify({ name: 'CasaAyalaGlobalStore', data: storePayload });
+
+      const res = await fetch(url, {
+        method: method,
+        headers: { 'Content-Type': 'application/json' },
+        body: body
+      });
+      if (res.ok || res.status === 201) {
+        updateSyncStatusUI('☁️ Nube Actualizada', true);
+        break;
+      }
+    } catch (err) {
+      console.warn('[Cloud Sync] Fallback de publicación en la nube:', err);
+    }
   }
 }
 
@@ -1659,13 +1673,9 @@ function renderNotasFisicasList() {
   
   let notasFis = notas.filter(n => n.tipo === 'Fisico');
 
-  // Gerente y Vendedores solo ven las de su sucursal
-  if (currentUser.rol === 'Gerente') {
-    notasFis = notasFis.filter(n => n.sucursalId === currentUser.sucursalId);
-  } else if (currentUser.rol === 'Vendedor') {
-    const vend = vendedores.find(v => v.userId === currentUser.id);
-    const vendId = vend ? vend.id : null;
-    notasFis = notasFis.filter(n => n.firmas.elaboro === currentUser.id || n.vendedorId === vendId);
+  // Interacción multilateral: Vendedores y Gerentes ven las notas de su sucursal o creadas por ellos
+  if (currentUser.rol === 'Gerente' || currentUser.rol === 'Vendedor') {
+    notasFis = notasFis.filter(n => !n.sucursalId || n.sucursalId === currentUser.sucursalId || (n.firmas && n.firmas.elaboro === currentUser.id));
   }
 
   // Filtros de búsqueda (Cliente y Fecha)
@@ -2164,13 +2174,9 @@ function renderNotasFinancierasList() {
   
   let notasFin = notas.filter(n => n.tipo === 'Financiero');
 
-  // Filtros
-  if (currentUser.rol === 'Gerente') {
-    notasFin = notasFin.filter(n => n.sucursalId === currentUser.sucursalId);
-  } else if (currentUser.rol === 'Vendedor') {
-    const vend = vendedores.find(v => v.userId === currentUser.id);
-    const vendId = vend ? vend.id : null;
-    notasFin = notasFin.filter(n => n.firmas.elaboro === currentUser.id || n.vendedorId === vendId);
+  // Interacción multilateral: Vendedores y Gerentes ven las notas de su sucursal o creadas por ellos
+  if (currentUser.rol === 'Gerente' || currentUser.rol === 'Vendedor') {
+    notasFin = notasFin.filter(n => !n.sucursalId || n.sucursalId === currentUser.sucursalId || (n.firmas && n.firmas.elaboro === currentUser.id));
   }
 
   // Filtros de búsqueda (Cliente y Fecha)
