@@ -2134,6 +2134,7 @@ function submitPhysicalNote(isDraft) {
 
   notas.push(nuevaNota);
   saveData('ca_notas', notas);
+  pushToCloudStorage();
   
   alert(isDraft ? "Borrador guardado." : "Nota de crédito física emitida.");
   
@@ -2620,6 +2621,7 @@ function submitFinancialNote(isDraft) {
 
   notas.push(nuevaNota);
   saveData('ca_notas', notas);
+  pushToCloudStorage();
 
   if (isDraft) {
     alert("Borrador guardado.");
@@ -2862,6 +2864,7 @@ function signNota(notaId, key) {
   }
 
   saveData('ca_notas', notas);
+  pushToCloudStorage();
   alert("Nota firmada digitalmente.");
   
   // Limpiar posible warning
@@ -2914,6 +2917,7 @@ document.getElementById('btn-cancel-nota-action').addEventListener('click', () =
       notas[idx].estado_operacion = 'Cancelada';
       notas[idx].estado = 'Cancelada';
       saveData('ca_notas', notas);
+      pushToCloudStorage();
       alert("Nota cancelada con éxito.");
       viewNotaDetail(currentDetailNotaId);
       initDashboard();
