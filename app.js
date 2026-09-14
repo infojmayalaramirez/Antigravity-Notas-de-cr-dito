@@ -14,6 +14,9 @@ function loadData(key, defaultData) {
 
 function saveData(key, data) {
   localStorage.setItem(key, JSON.stringify(data));
+  if (!isMergingFromCloud && typeof triggerCloudPushDebounced === 'function') {
+    triggerCloudPushDebounced();
+  }
 }
 
 const DEFAULT_USUARIOS_FALLBACK = [
@@ -40,19 +43,91 @@ let notas = loadData('ca_notas', []);
 let faltantesPicking = loadData('ca_faltantes_picking', []);
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
-// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (MULTI-ENDPOINT CLOUD SYNC PARA NETLIFY Y MÓVILES) ---
-const CLOUD_SYNC_ENDPOINTS = [
-  'https://crudcrud.com/api/df7ec2302bff40bbbfb1109e560d7b07/store',
-  'https://api.restful-api.dev/objects/ff808181a067127101a0992aa08e062e'
-];
-
+// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (MULTI-ENDPOINT PER-ENTITY CLOUD SYNC) ---
+let activeCloudToken = localStorage.getItem('ca_active_cloud_token') || 'ef7f8a31491941c1af0f6681de80ffbc';
 let isSyncingWithCloud = false;
+let cloudPushTimer = null;
+let isMergingFromCloud = false;
 
 function updateSyncStatusUI(statusText, isSuccess = true) {
   const el = document.getElementById('cloud-sync-status-indicator');
   if (el) {
-    el.textContent = statusText;
+    el.innerHTML = `<i class="fa-solid fa-cloud"></i> ${statusText}`;
     el.style.color = isSuccess ? '#ffffff' : '#fde047';
+  }
+}
+
+async function getFreshCloudToken() {
+  try {
+    const res = await fetch('https://crudcrud.com', { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    if (res.ok) {
+      const html = await res.text();
+      const match = html.match(/\/api\/[a-f0-9]{32}/i);
+      if (match) {
+        const token = match[0].replace('/api/', '');
+        localStorage.setItem('ca_active_cloud_token', token);
+        activeCloudToken = token;
+        console.log('[Cloud Sync] Renovado nuevo token de nube:', activeCloudToken);
+        return activeCloudToken;
+      }
+    }
+  } catch (e) {
+    console.warn('[Cloud Sync] Error al renovar token:', e);
+  }
+  return activeCloudToken;
+}
+
+function triggerCloudPushDebounced() {
+  if (cloudPushTimer) clearTimeout(cloudPushTimer);
+  cloudPushTimer = setTimeout(() => {
+    pushToCloudStorage();
+  }, 400);
+}
+
+async function pushToCloudStorage() {
+  if (!activeCloudToken) await getFreshCloudToken();
+  const baseUrl = `https://crudcrud.com/api/${activeCloudToken}`;
+  const collections = [
+    { name: 'clientes', data: clientes },
+    { name: 'operadores', data: operadores },
+    { name: 'vendedores', data: vendedores },
+    { name: 'proveedores', data: proveedores },
+    { name: 'presupuestos', data: presupuestos },
+    { name: 'notas', data: notas },
+    { name: 'faltantes', data: faltantesPicking },
+    { name: 'usuarios', data: usuarios }
+  ];
+
+  let hasUploaded = false;
+  for (let col of collections) {
+    if (!col.data || col.data.length === 0) continue;
+    for (let item of col.data) {
+      if (!item || !item.id) continue;
+      try {
+        const res = await fetch(`${baseUrl}/${col.name}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(item)
+        });
+        if (res.status === 201 || res.ok) {
+          hasUploaded = true;
+        } else if (res.status === 400 || res.status === 404 || res.status === 500) {
+          await getFreshCloudToken();
+          const retryUrl = `https://crudcrud.com/api/${activeCloudToken}`;
+          const retryRes = await fetch(`${retryUrl}/${col.name}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(item)
+          });
+          if (retryRes.ok || retryRes.status === 201) hasUploaded = true;
+        }
+      } catch (err) {
+        console.warn(`[Cloud Sync] Error al publicar ${col.name}:`, err);
+      }
+    }
+  }
+  if (hasUploaded) {
+    updateSyncStatusUI('☁️ Nube Actualizada', true);
   }
 }
 
@@ -60,21 +135,52 @@ async function syncWithCloudStorage() {
   if (isSyncingWithCloud) return;
   isSyncingWithCloud = true;
   try {
-    for (let url of CLOUD_SYNC_ENDPOINTS) {
+    if (!activeCloudToken) await getFreshCloudToken();
+    const baseUrl = `https://crudcrud.com/api/${activeCloudToken}`;
+    const collections = ['clientes', 'operadores', 'vendedores', 'proveedores', 'presupuestos', 'notas', 'faltantes', 'usuarios'];
+    const storePayload = {};
+
+    let hasSuccess = false;
+    let hasExpired = false;
+
+    for (let colName of collections) {
       try {
-        const res = await fetch(url);
+        const res = await fetch(`${baseUrl}/${colName}`);
         if (res.ok) {
-          const payload = await res.json();
-          const store = Array.isArray(payload) ? (payload.length > 0 ? payload[payload.length - 1] : null) : (payload ? (payload.data || payload) : null);
-          if (store && typeof store === 'object') {
-            mergeAllDataFromStore(store);
-            updateSyncStatusUI('☁️ Nube Sincronizada (Netlify)', true);
-            return;
+          const items = await res.json();
+          if (Array.isArray(items)) {
+            storePayload[colName] = items;
+            hasSuccess = true;
           }
+        } else if (res.status === 400 || res.status === 404 || res.status === 500) {
+          hasExpired = true;
         }
       } catch (e) {}
     }
-    updateSyncStatusUI('⚡ Modo Red Local / Servidor', false);
+
+    if (hasExpired && !hasSuccess) {
+      await getFreshCloudToken();
+      const retryUrl = `https://crudcrud.com/api/${activeCloudToken}`;
+      for (let colName of collections) {
+        try {
+          const res = await fetch(`${retryUrl}/${colName}`);
+          if (res.ok) {
+            const items = await res.json();
+            if (Array.isArray(items)) {
+              storePayload[colName] = items;
+              hasSuccess = true;
+            }
+          }
+        } catch (e) {}
+      }
+    }
+
+    if (hasSuccess) {
+      mergeAllDataFromStore(storePayload);
+      updateSyncStatusUI('☁️ Nube Sincronizada (Netlify)', true);
+    } else {
+      updateSyncStatusUI('⚡ Modo Red Local / Servidor', false);
+    }
   } catch (err) {
     console.warn('[Cloud Sync] Error al sincronizar con la nube:', err);
   } finally {
@@ -82,40 +188,9 @@ async function syncWithCloudStorage() {
   }
 }
 
-async function pushToCloudStorage() {
-  const storePayload = {
-    clientes: clientes || [],
-    operadores: operadores || [],
-    vendedores: vendedores || [],
-    proveedores: proveedores || [],
-    presupuestos: presupuestos || [],
-    notas: notas || [],
-    faltantesPicking: faltantesPicking || []
-  };
-
-  for (let url of CLOUD_SYNC_ENDPOINTS) {
-    try {
-      const isCrud = url.includes('crudcrud.com');
-      let method = isCrud ? 'POST' : 'PUT';
-      let body = isCrud ? JSON.stringify(storePayload) : JSON.stringify({ name: 'CasaAyalaGlobalStore', data: storePayload });
-
-      const res = await fetch(url, {
-        method: method,
-        headers: { 'Content-Type': 'application/json' },
-        body: body
-      });
-      if (res.ok || res.status === 201) {
-        updateSyncStatusUI('☁️ Nube Actualizada', true);
-        break;
-      }
-    } catch (err) {
-      console.warn('[Cloud Sync] Fallback de publicación en la nube:', err);
-    }
-  }
-}
-
 function mergeAllDataFromStore(store) {
   if (!store) return;
+  isMergingFromCloud = true;
   function mergeArrays(localArr, serverArr) {
     const map = new Map();
     (localArr || []).forEach(item => { if (item && item.id) map.set(String(item.id), item); });
@@ -163,9 +238,14 @@ function mergeAllDataFromStore(store) {
     saveData('ca_notas', notas);
     changed = true;
   }
-  if (Array.isArray(store.faltantesPicking) && store.faltantesPicking.length > 0) {
-    faltantesPicking = mergeArrays(faltantesPicking, store.faltantesPicking);
+  if (Array.isArray(store.faltantes) && store.faltantes.length > 0) {
+    faltantesPicking = mergeArrays(faltantesPicking, store.faltantes);
     saveData('ca_faltantes_picking', faltantesPicking);
+    changed = true;
+  }
+  if (Array.isArray(store.usuarios) && store.usuarios.length > 0) {
+    usuarios = mergeArrays(usuarios, store.usuarios);
+    saveData('ca_usuarios', usuarios);
     changed = true;
   }
 
@@ -175,6 +255,7 @@ function mergeAllDataFromStore(store) {
     if (typeof renderNotasFisicasList === 'function') renderNotasFisicasList();
     if (typeof renderNotasFinancierasList === 'function') renderNotasFinancierasList();
   }
+  isMergingFromCloud = false;
 }
 
 // Función asíncrona para sincronizar datos reales desde la base de datos SQL Server / Nube
@@ -302,9 +383,9 @@ window.importarDatosJSON = function(event) {
   reader.readAsText(file);
 };
 
-// Sincronización inicial y temporizador automático cada 30 segundos (y al enfocar pantalla o cambiar pestaña)
+// Sincronización inicial y temporizador automático cada 3 segundos (y al enfocar pantalla o cambiar pestaña)
 fetchAPIData();
-setInterval(fetchAPIData, 30000);
+setInterval(fetchAPIData, 3000);
 window.addEventListener('focus', () => { fetchAPIData(); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') fetchAPIData(); });
 
