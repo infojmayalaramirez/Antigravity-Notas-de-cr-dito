@@ -55,7 +55,8 @@ let notas = loadData('ca_notas', []);
 let faltantesPicking = loadData('ca_faltantes_picking', []);
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
-// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (GOOGLE CLOUD FIREBASE & MULTI-ENDPOINT) ---
+// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (GOOGLE CLOUD & PERMANENT STORE) ---
+const PERMANENT_CLOUD_STORE_URL = 'https://api.restful-api.dev/objects/ff808181a09d98f701a0a165bc0f0778';
 let activeCloudToken = localStorage.getItem('ca_active_cloud_token') || 'ef7f8a31491941c1af0f6681de80ffbc';
 let isSyncingWithCloud = false;
 let cloudPushTimer = null;
@@ -113,22 +114,50 @@ function triggerCloudPushDebounced() {
 }
 
 async function pushToCloudStorage() {
-  const collections = [
-    { name: 'clientes', data: clientes },
-    { name: 'operadores', data: operadores },
-    { name: 'vendedores', data: vendedores },
-    { name: 'proveedores', data: proveedores },
-    { name: 'presupuestos', data: presupuestos },
-    { name: 'notas', data: notas },
-    { name: 'faltantes', data: faltantesPicking },
-    { name: 'usuarios', data: usuarios }
-  ];
+  const storePayload = {
+    clientes: clientes || [],
+    operadores: operadores || [],
+    vendedores: vendedores || [],
+    proveedores: proveedores || [],
+    presupuestos: presupuestos || [],
+    notas: notas || [],
+    faltantes: faltantesPicking || [],
+    usuarios: usuarios || []
+  };
 
   let hasUploaded = false;
 
-  // 1. Publicar en Google Cloud Firebase (si está activo)
+  // 1. Publicar en Almacenamiento Permanente en la Nube Global (Restful-API 200 OK)
+  try {
+    const res = await fetch(PERMANENT_CLOUD_STORE_URL, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'CasaAyalaGlobalStore',
+        data: storePayload
+      })
+    });
+    if (res.ok) {
+      hasUploaded = true;
+      updateSyncStatusUI('☁️ Nube Sincronizada (Netlify)', true);
+    }
+  } catch (e) {
+    console.warn('[Cloud Sync] Error en almacén primario:', e);
+  }
+
+  // 2. Publicar en Google Cloud Firebase (si está activo)
   if (googleCloudDb) {
     try {
+      const collections = [
+        { name: 'clientes', data: clientes },
+        { name: 'operadores', data: operadores },
+        { name: 'vendedores', data: vendedores },
+        { name: 'proveedores', data: proveedores },
+        { name: 'presupuestos', data: presupuestos },
+        { name: 'notas', data: notas },
+        { name: 'faltantes', data: faltantesPicking },
+        { name: 'usuarios', data: usuarios }
+      ];
       collections.forEach(col => {
         if (col.data && col.data.length > 0) {
           const storeObj = {};
@@ -142,45 +171,13 @@ async function pushToCloudStorage() {
         }
       });
       hasUploaded = true;
-      updateSyncStatusUI('☁️ Nube de Google Actualizada', true);
     } catch (e) {
       console.warn('[Google Cloud] Fallback de publicación:', e);
     }
   }
 
-  // 2. Publicación de respaldo en endpoints HTTP REST multi-dispositivo
-  if (!activeCloudToken) await getFreshCloudToken();
-  const baseUrl = `https://crudcrud.com/api/${activeCloudToken}`;
-
-  for (let col of collections) {
-    if (!col.data || col.data.length === 0) continue;
-    for (let item of col.data) {
-      if (!item || !item.id) continue;
-      try {
-        const res = await fetch(`${baseUrl}/${col.name}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(item)
-        });
-        if (res.status === 201 || res.ok) {
-          hasUploaded = true;
-        } else if (res.status === 400 || res.status === 404 || res.status === 500) {
-          await getFreshCloudToken();
-          const retryUrl = `https://crudcrud.com/api/${activeCloudToken}`;
-          const retryRes = await fetch(`${retryUrl}/${col.name}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(item)
-          });
-          if (retryRes.ok || retryRes.status === 201) hasUploaded = true;
-        }
-      } catch (err) {
-        console.warn(`[Cloud Sync] Error al publicar ${col.name}:`, err);
-      }
-    }
-  }
   if (hasUploaded) {
-    updateSyncStatusUI('☁️ Nube de Google Activa', true);
+    updateSyncStatusUI('☁️ Nube Activa (Google & Netlify)', true);
   }
 }
 
@@ -188,16 +185,31 @@ async function syncWithCloudStorage() {
   if (isSyncingWithCloud) return;
   isSyncingWithCloud = true;
   try {
-    const collections = ['clientes', 'operadores', 'vendedores', 'proveedores', 'presupuestos', 'notas', 'faltantes', 'usuarios'];
-    const storePayload = {};
+    let storePayload = null;
     let hasSuccess = false;
 
-    // 1. Sincronizar desde Google Cloud Firebase
+    // 1. Sincronizar desde Almacenamiento Permanente en la Nube Global (Restful-API 200 OK)
+    try {
+      const res = await fetch(PERMANENT_CLOUD_STORE_URL);
+      if (res.ok) {
+        const body = await res.json();
+        if (body && body.data && typeof body.data === 'object') {
+          storePayload = body.data;
+          hasSuccess = true;
+        }
+      }
+    } catch (e) {
+      console.warn('[Cloud Sync] Error al consultar almacén primario:', e);
+    }
+
+    // 2. Sincronizar desde Google Cloud Firebase (si está activo)
     if (googleCloudDb) {
       try {
         const snapshot = await googleCloudDb.ref().once('value');
         const val = snapshot.val();
         if (val && typeof val === 'object') {
+          if (!storePayload) storePayload = {};
+          const collections = ['clientes', 'operadores', 'vendedores', 'proveedores', 'presupuestos', 'notas', 'faltantes', 'usuarios'];
           collections.forEach(colName => {
             if (val[colName]) {
               const items = Object.values(val[colName]);
@@ -213,69 +225,9 @@ async function syncWithCloudStorage() {
       }
     }
 
-    // 2. Sincronizar desde endpoints HTTP REST multi-dispositivo
-    if (!activeCloudToken) await getFreshCloudToken();
-    const baseUrl = `https://crudcrud.com/api/${activeCloudToken}`;
-    let hasExpired = false;
-
-    for (let colName of collections) {
-      try {
-        const res = await fetch(`${baseUrl}/${colName}`);
-        if (res.ok) {
-          const items = await res.json();
-          if (Array.isArray(items) && items.length > 0) {
-            if (!storePayload[colName]) storePayload[colName] = [];
-            storePayload[colName] = [...storePayload[colName], ...items];
-            hasSuccess = true;
-          }
-        } else if (res.status === 400 || res.status === 404 || res.status === 500) {
-          hasExpired = true;
-        }
-      } catch (e) {}
-    }
-
-    if (hasExpired && !hasSuccess) {
-      await getFreshCloudToken();
-      const retryUrl = `https://crudcrud.com/api/${activeCloudToken}`;
-      for (let colName of collections) {
-        try {
-          const res = await fetch(`${retryUrl}/${colName}`);
-          if (res.ok) {
-            const items = await res.json();
-            if (Array.isArray(items) && items.length > 0) {
-              if (!storePayload[colName]) storePayload[colName] = [];
-              storePayload[colName] = [...storePayload[colName], ...items];
-              hasSuccess = true;
-            }
-          }
-        } catch (e) {}
-      }
-    }
-
-    if (hasSuccess) {
+    if (hasSuccess && storePayload) {
       mergeAllDataFromStore(storePayload);
-      updateSyncStatusUI('☁️ Nube de Google Activa (Netlify)', true);
-    } else {
-      updateSyncStatusUI('⚡ Modo Red Local / Servidor', false);
-    }
-  } catch (err) {
-    console.warn('[Cloud Sync] Error al sincronizar con la nube:', err);
-  } finally {
-    isSyncingWithCloud = false;
-  }
-}
-            if (Array.isArray(items)) {
-              storePayload[colName] = items;
-              hasSuccess = true;
-            }
-          }
-        } catch (e) {}
-      }
-    }
-
-    if (hasSuccess) {
-      mergeAllDataFromStore(storePayload);
-      updateSyncStatusUI('☁️ Nube Sincronizada (Netlify)', true);
+      updateSyncStatusUI('☁️ Nube Activa (Google & Netlify)', true);
     } else {
       updateSyncStatusUI('⚡ Modo Red Local / Servidor', false);
     }
