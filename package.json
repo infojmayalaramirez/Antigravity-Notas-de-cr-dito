@@ -11,8 +11,6 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "@netlify/blobs": "^11.1.0",
-    "@netlify/functions": "^6.0.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "mssql": "^12.7.0",
