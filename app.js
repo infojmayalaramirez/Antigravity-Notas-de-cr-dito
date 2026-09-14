@@ -62,8 +62,7 @@ let notas = loadData('ca_notas', []);
 let faltantesPicking = loadData('ca_faltantes_picking', []);
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
-// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (MULTI-ENTIDAD CON GOOGLE & NETLIFY) ---
-let activeCloudToken = localStorage.getItem('ca_active_cloud_token') || 'a815ef124dc748e6b23da464b133433f';
+// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (GOOGLE CLOUD & NETLIFY SERVERLESS) ---
 let isSyncingWithCloud = false;
 let cloudPushTimer = null;
 let isMergingFromCloud = false;
@@ -92,26 +91,6 @@ function updateSyncStatusUI(statusText, isSuccess = true) {
   }
 }
 
-async function getFreshCloudToken() {
-  try {
-    const res = await fetch('https://crudcrud.com', { headers: { 'User-Agent': 'Mozilla/5.0' } });
-    if (res.ok) {
-      const html = await res.text();
-      const match = html.match(/\/api\/[a-f0-9]{32}/i);
-      if (match) {
-        const token = match[0].replace('/api/', '');
-        localStorage.setItem('ca_active_cloud_token', token);
-        activeCloudToken = token;
-        console.log('[Cloud Sync] Renovado nuevo token de nube:', activeCloudToken);
-        return activeCloudToken;
-      }
-    }
-  } catch (e) {
-    console.warn('[Cloud Sync] Error al renovar token:', e);
-  }
-  return activeCloudToken;
-}
-
 function triggerCloudPushDebounced() {
   if (cloudPushTimer) clearTimeout(cloudPushTimer);
   cloudPushTimer = setTimeout(() => {
@@ -119,124 +98,86 @@ function triggerCloudPushDebounced() {
   }, 400);
 }
 
+// Publica el almacén de datos unificado a la Nube (Netlify Serverless + Google Firebase)
 async function pushToCloudStorage() {
-  if (!activeCloudToken) await getFreshCloudToken();
-  const baseUrl = `https://crudcrud.com/api/${activeCloudToken}`;
-  const collections = [
-    { name: 'clientes', data: clientes },
-    { name: 'operadores', data: operadores },
-    { name: 'vendedores', data: vendedores },
-    { name: 'proveedores', data: proveedores },
-    { name: 'presupuestos', data: presupuestos },
-    { name: 'notas', data: notas },
-    { name: 'faltantes', data: faltantesPicking },
-    { name: 'usuarios', data: usuarios }
-  ];
+  const payload = {
+    clientes: clientes || [],
+    notas: notas || [],
+    operadores: operadores || [],
+    vendedores: vendedores || [],
+    proveedores: proveedores || [],
+    presupuestos: presupuestos || [],
+    faltantes: faltantesPicking || [],
+    usuarios: ensureAllSqlUsersExist(usuarios || []),
+    sucursales: DEFAULT_SUCURSALES_MAESTRAS,
+    updatedAt: new Date().toISOString()
+  };
 
-  let hasUploaded = false;
+  let pushSuccess = false;
 
-  // Enviar entidades a la nube activa
-  for (let col of collections) {
-    if (!col.data || col.data.length === 0) continue;
-    for (let item of col.data) {
-      if (!item || !item.id) continue;
-      try {
-        const res = await fetch(`${baseUrl}/${col.name}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(item)
-        });
-        if (res.status === 201 || res.ok) {
-          hasUploaded = true;
-        } else if (res.status === 400 || res.status === 404 || res.status === 500) {
-          await getFreshCloudToken();
-          const retryUrl = `https://crudcrud.com/api/${activeCloudToken}`;
-          const retryRes = await fetch(`${retryUrl}/${col.name}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(item)
-          });
-          if (retryRes.ok || retryRes.status === 201) hasUploaded = true;
-        }
-      } catch (err) {
-        console.warn(`[Cloud Sync] Error al publicar ${col.name}:`, err);
-      }
+  // 1. Envío a Endpoint Netlify Serverless Cloud
+  try {
+    const res = await fetch('/.netlify/functions/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (res.ok) {
+      pushSuccess = true;
+    }
+  } catch (err) {
+    console.warn('[Cloud Sync] Error al publicar en Netlify Cloud:', err);
+  }
+
+  // 2. Envío a Google Cloud Firebase
+  if (googleCloudDb) {
+    try {
+      googleCloudDb.ref('store').set(payload);
+      pushSuccess = true;
+    } catch (e) {
+      console.warn('[Google Cloud] Error en Firebase push:', e);
     }
   }
 
-  // Soporte Google Cloud Firebase
-  if (googleCloudDb) {
-    try {
-      collections.forEach(col => {
-        if (col.data && col.data.length > 0) {
-          const storeObj = {};
-          col.data.forEach(item => {
-            if (item && item.id) {
-              const safeKey = String(item.id).replace(/[.#$/[\]]/g, '_');
-              storeObj[safeKey] = item;
-            }
-          });
-          googleCloudDb.ref(col.name).update(storeObj);
-        }
-      });
-      hasUploaded = true;
-    } catch (e) {}
-  }
-
-  if (hasUploaded) {
+  if (pushSuccess) {
     updateSyncStatusUI('☁️ Nube Activa (Google & Netlify)', true);
+  } else {
+    updateSyncStatusUI('⚡ Red Local / Servidor', false);
   }
 }
 
+// Lee el almacén de datos unificado de la Nube y sobreescribe los cachés locales
 async function syncWithCloudStorage() {
   if (isSyncingWithCloud) return;
   isSyncingWithCloud = true;
   try {
-    if (!activeCloudToken) await getFreshCloudToken();
-    const baseUrl = `https://crudcrud.com/api/${activeCloudToken}`;
-    const collections = ['clientes', 'operadores', 'vendedores', 'proveedores', 'presupuestos', 'notas', 'faltantes', 'usuarios'];
-    const storePayload = {};
+    let cloudStore = null;
 
-    let hasSuccess = false;
-    let hasExpired = false;
+    // 1. Lectura desde Netlify Cloud Endpoint
+    try {
+      const res = await fetch('/.netlify/functions/sync', { cache: 'no-store' });
+      if (res.ok) {
+        cloudStore = await res.json();
+      }
+    } catch (e) {
+      console.warn('[Cloud Sync] Netlify endpoint inaccesible:', e);
+    }
 
-    for (let colName of collections) {
+    // 2. Lectura desde Google Cloud Firebase (como respaldo directo)
+    if (!cloudStore && googleCloudDb) {
       try {
-        const res = await fetch(`${baseUrl}/${colName}`);
-        if (res.ok) {
-          const items = await res.json();
-          if (Array.isArray(items) && items.length > 0) {
-            storePayload[colName] = items;
-            hasSuccess = true;
-          }
-        } else if (res.status === 400 || res.status === 404 || res.status === 500) {
-          hasExpired = true;
+        const snapshot = await googleCloudDb.ref('store').once('value');
+        if (snapshot.exists()) {
+          cloudStore = snapshot.val();
         }
       } catch (e) {}
     }
 
-    if (hasExpired && !hasSuccess) {
-      await getFreshCloudToken();
-      const retryUrl = `https://crudcrud.com/api/${activeCloudToken}`;
-      for (let colName of collections) {
-        try {
-          const res = await fetch(`${retryUrl}/${colName}`);
-          if (res.ok) {
-            const items = await res.json();
-            if (Array.isArray(items) && items.length > 0) {
-              storePayload[colName] = items;
-              hasSuccess = true;
-            }
-          }
-        } catch (e) {}
-      }
-    }
-
-    if (hasSuccess) {
-      mergeAllDataFromStore(storePayload);
+    if (cloudStore && (cloudStore.clientes || cloudStore.notas || cloudStore.usuarios)) {
+      applyServerMasterStore(cloudStore);
       updateSyncStatusUI('☁️ Nube Activa (Google & Netlify)', true);
     } else {
-      updateSyncStatusUI('⚡ Modo Red Local / Servidor', false);
+      updateSyncStatusUI('⚡ Red Local / Servidor', false);
     }
   } catch (err) {
     console.warn('[Cloud Sync] Error al sincronizar con la nube:', err);
@@ -245,66 +186,54 @@ async function syncWithCloudStorage() {
   }
 }
 
-function mergeAllDataFromStore(store) {
+// Aplica el almacén unificado sobreescribiendo cachés obsoletos por dispositivo
+function applyServerMasterStore(store) {
   if (!store) return;
   isMergingFromCloud = true;
-  function mergeArrays(localArr, serverArr) {
-    const map = new Map();
-    (localArr || []).forEach(item => { if (item && item.id) map.set(String(item.id), item); });
-    (serverArr || []).forEach(item => {
-      if (item && item.id) {
-        if (map.has(String(item.id))) {
-          map.set(String(item.id), { ...map.get(String(item.id)), ...item });
-        } else {
-          map.set(String(item.id), item);
-        }
-      }
-    });
-    return Array.from(map.values());
-  }
 
   let changed = false;
 
-  if (Array.isArray(store.clientes) && store.clientes.length > 0) {
-    clientes = mergeArrays(clientes, store.clientes);
+  if (Array.isArray(store.clientes)) {
+    clientes = store.clientes;
     saveData('ca_clientes', clientes);
     changed = true;
   }
-  if (Array.isArray(store.operadores) && store.operadores.length > 0) {
-    operadores = mergeArrays(operadores, store.operadores);
-    saveData('ca_operadores', operadores);
-    changed = true;
-  }
-  if (Array.isArray(store.vendedores) && store.vendedores.length > 0) {
-    vendedores = mergeArrays(vendedores, store.vendedores);
-    saveData('ca_vendedores', vendedores);
-    changed = true;
-  }
-  if (Array.isArray(store.proveedores) && store.proveedores.length > 0) {
-    proveedores = mergeArrays(proveedores, store.proveedores);
-    saveData('ca_proveedores', proveedores);
-    changed = true;
-  }
-  if (Array.isArray(store.presupuestos) && store.presupuestos.length > 0) {
-    presupuestos = mergeArrays(presupuestos, store.presupuestos);
-    saveData('ca_presupuestos', presupuestos);
-    changed = true;
-  }
-  if (Array.isArray(store.notas) && store.notas.length > 0) {
-    notas = mergeArrays(notas, store.notas);
+  if (Array.isArray(store.notas)) {
+    notas = store.notas;
     saveData('ca_notas', notas);
     changed = true;
   }
-  if (Array.isArray(store.faltantes) && store.faltantes.length > 0) {
-    faltantesPicking = mergeArrays(faltantesPicking, store.faltantes);
+  if (Array.isArray(store.operadores)) {
+    operadores = store.operadores;
+    saveData('ca_operadores', operadores);
+    changed = true;
+  }
+  if (Array.isArray(store.vendedores)) {
+    vendedores = store.vendedores;
+    saveData('ca_vendedores', vendedores);
+    changed = true;
+  }
+  if (Array.isArray(store.proveedores)) {
+    proveedores = store.proveedores;
+    saveData('ca_proveedores', proveedores);
+    changed = true;
+  }
+  if (Array.isArray(store.presupuestos)) {
+    presupuestos = store.presupuestos;
+    saveData('ca_presupuestos', presupuestos);
+    changed = true;
+  }
+  if (Array.isArray(store.faltantes)) {
+    faltantesPicking = store.faltantes;
     saveData('ca_faltantes_picking', faltantesPicking);
     changed = true;
   }
-  if (Array.isArray(store.usuarios) && store.usuarios.length > 0) {
-    usuarios = ensureAllSqlUsersExist(mergeArrays(usuarios, store.usuarios));
-    saveData('ca_usuarios', usuarios);
-    changed = true;
-  }
+
+  // Garantizar SIEMPRE los 4 usuarios espejo de SQL Server
+  usuarios = ensureAllSqlUsersExist(Array.isArray(store.usuarios) ? store.usuarios : usuarios);
+  saveData('ca_usuarios', usuarios);
+
+  // Garantizar SIEMPRE estrictamente las 3 sucursales maestras
   sucursales = DEFAULT_SUCURSALES_MAESTRAS;
   saveData('ca_sucursales', sucursales);
 
@@ -316,6 +245,13 @@ function mergeAllDataFromStore(store) {
   }
   isMergingFromCloud = false;
 }
+
+// Polling continuo automático cada 5 segundos para sincronización en tiempo real
+setInterval(() => {
+  if (!isSyncingWithCloud) {
+    syncWithCloudStorage();
+  }
+}, 5000);
 
 // Función asíncrona para sincronizar datos reales desde la base de datos SQL Server / Nube
 async function fetchAPIData() {
