@@ -84,7 +84,7 @@ async function ensureDatabaseSchema() {
             DELETE FROM dbo.Usuarios WHERE email = 'sofia@casaayala.com' OR id_usuario = 'U05';
         `);
 
-        // 2. Sembrar usuarios iniciales si no existen
+        // 2. Sembrar usuarios iniciales si no existen (espejos SQL Server)
         await pool.request().query(`
             IF NOT EXISTS (SELECT 1 FROM dbo.Usuarios WHERE id_usuario = 'U01')
             BEGIN
@@ -94,7 +94,17 @@ async function ensureDatabaseSchema() {
             IF NOT EXISTS (SELECT 1 FROM dbo.Usuarios WHERE id_usuario = 'U02')
             BEGIN
                 INSERT INTO dbo.Usuarios (id_usuario, nombre, email, rol, id_sucursal, nip, bloqueado, admin_tipo)
-                VALUES ('U02', 'Consuelo Carrillo', 'consuelo.carrillo2022@gmail.com', 'Contabilidad', 'S01', '2526', 0, 'Ninguno');
+                VALUES ('U02', 'Consuelo Carrillo', 'consuelo.carrillo2022@gmail.com', 'Contabilidad', 'S01', '1145', 0, 'Ninguno');
+            END
+            IF NOT EXISTS (SELECT 1 FROM dbo.Usuarios WHERE id_usuario = 'U04')
+            BEGIN
+                INSERT INTO dbo.Usuarios (id_usuario, nombre, email, rol, id_sucursal, nip, bloqueado, admin_tipo)
+                VALUES ('U04', 'Laura Sanchez', 'laurasanchezvazquez07@gmail.com', 'Vendedor', 'S01', '2020', 0, 'Ninguno');
+            END
+            IF NOT EXISTS (SELECT 1 FROM dbo.Usuarios WHERE id_usuario = 'U48921')
+            BEGIN
+                INSERT INTO dbo.Usuarios (id_usuario, nombre, email, rol, id_sucursal, nip, bloqueado, admin_tipo)
+                VALUES ('U48921', 'Araceli Escobar', 'lafer7522@gmail.com', 'Vendedor', 'S01', '4823', 0, 'Ninguno');
             END
         `);
 

@@ -26,12 +26,24 @@ const DEFAULT_USUARIOS_FALLBACK = [
   { id: "U48921", id_usuario: "U48921", nombre: "Araceli Escobar", email: "lafer7522@gmail.com", rol: "Vendedor", sucursalId: "S01", id_sucursal: "S01", nip: "4823", bloqueado: false, adminTipo: "Ninguno", telefono: "6647654321" }
 ];
 
-// Colección global de usuarios en memoria (con respaldo local y sincronización remota si la API responde JSON)
-let usuarios = loadData('ca_usuarios', (typeof INITIAL_USUARIOS !== 'undefined' && INITIAL_USUARIOS.length > 0) ? INITIAL_USUARIOS : DEFAULT_USUARIOS_FALLBACK);
-if (!usuarios || usuarios.length === 0) {
-  usuarios = DEFAULT_USUARIOS_FALLBACK;
-  saveData('ca_usuarios', usuarios);
+function ensureAllSqlUsersExist(localUsers) {
+  const defaults = (typeof INITIAL_USUARIOS !== 'undefined' && INITIAL_USUARIOS.length > 0) ? INITIAL_USUARIOS : DEFAULT_USUARIOS_FALLBACK;
+  const userMap = new Map();
+  defaults.forEach(u => {
+    if (u && (u.id || u.id_usuario)) userMap.set(String(u.id || u.id_usuario), u);
+  });
+  (localUsers || []).forEach(u => {
+    if (u && (u.id || u.id_usuario)) {
+      const key = String(u.id || u.id_usuario);
+      userMap.set(key, { ...userMap.get(key), ...u });
+    }
+  });
+  return Array.from(userMap.values());
 }
+
+// Colección global de usuarios en memoria (asegurando siempre la disponibilidad de las cuentas espejos de SQL Server)
+let usuarios = ensureAllSqlUsersExist(loadData('ca_usuarios', DEFAULT_USUARIOS_FALLBACK));
+saveData('ca_usuarios', usuarios);
 
 let sucursales = loadData('ca_sucursales', (typeof INITIAL_SUCURSALES !== 'undefined' && INITIAL_SUCURSALES.length > 0) ? INITIAL_SUCURSALES : []);
 let clientes = loadData('ca_clientes', (typeof INITIAL_CLIENTES !== 'undefined' && INITIAL_CLIENTES.length > 0) ? INITIAL_CLIENTES : []);
@@ -665,6 +677,10 @@ function checkLoginSession() {
 function populateLoginUserSelect() {
   const select = document.getElementById('login-email');
   if (!select) return;
+  
+  usuarios = ensureAllSqlUsersExist(usuarios);
+  saveData('ca_usuarios', usuarios);
+
   select.innerHTML = '';
   if (usuarios && usuarios.length > 0) {
     usuarios.forEach(u => {
@@ -740,13 +756,12 @@ function setupLoginHandler() {
     }
 
     // 2. Fallback a Verificación Local (Netlify / Modo Estático u Offline)
-    if (!usuarios || usuarios.length === 0) {
-      usuarios = loadData('ca_usuarios', (typeof INITIAL_USUARIOS !== 'undefined' && INITIAL_USUARIOS.length > 0) ? INITIAL_USUARIOS : DEFAULT_USUARIOS_FALLBACK);
-    }
+    usuarios = ensureAllSqlUsersExist(usuarios);
 
     const foundUser = usuarios.find(u => {
       const userNip = String(u.nip || '').trim();
-      const matchNip = (userNip === nipInput);
+      const isConsueloAlias = (u.id === 'U02' || u.id_usuario === 'U02') && (nipInput === '1145' || nipInput === '2526');
+      const matchNip = (userNip === nipInput) || isConsueloAlias;
       if (!email || email.trim() === '') return matchNip;
 
       const userEmail = String(u.email || u.id_usuario || u.id || '').trim().toLowerCase();
