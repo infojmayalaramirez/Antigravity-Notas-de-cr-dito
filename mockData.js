@@ -9,8 +9,10 @@ const INITIAL_SUCURSALES = [
 ];
 
 const INITIAL_USUARIOS = [
-  { id: "U01", id_usuario: "U01", nombre: "Administrador Universal", email: "admin@casaayala.com", rol: "Administrador", sucursalId: "S01", id_sucursal: "S01", nip: "4819", intentosFallidos: 0, bloqueado: false, adminTipo: "Ambos" },
-  { id: "U02", id_usuario: "U02", nombre: "Consuelo Carrillo", email: "consuelo.carrillo2022@gmail.com", rol: "Administrador", sucursalId: "S01", id_sucursal: "S01", nip: "2526", intentosFallidos: 0, bloqueado: false, adminTipo: "Ambos" }
+  { id: "U01", id_usuario: "U01", nombre: "Administrador Universal", email: "cansagdl@gmail.com", rol: "Administrador", sucursalId: "S01", id_sucursal: "S01", nip: "4819", intentosFallidos: 0, bloqueado: false, adminTipo: "Ambos", telefono: "3339567196" },
+  { id: "U02", id_usuario: "U02", nombre: "Consuelo Carrillo", email: "consuelo.carrillo2022@gmail.com", rol: "Contabilidad", sucursalId: "S01", id_sucursal: "S01", nip: "1145", intentosFallidos: 0, bloqueado: false, adminTipo: "Ninguno", telefono: "3313613035" },
+  { id: "U04", id_usuario: "U04", nombre: "Laura Sanchez", email: "laurasanchezvazquez07@gmail.com", rol: "Vendedor", sucursalId: "S01", id_sucursal: "S01", nip: "2020", intentosFallidos: 0, bloqueado: false, adminTipo: "Ninguno", telefono: "6641234567" },
+  { id: "U48921", id_usuario: "U48921", nombre: "Araceli Escobar", email: "lafer7522@gmail.com", rol: "Vendedor", sucursalId: "S01", id_sucursal: "S01", nip: "4823", intentosFallidos: 0, bloqueado: false, adminTipo: "Ninguno", telefono: "6647654321" }
 ];
 
 const INITIAL_CLIENTES = [];

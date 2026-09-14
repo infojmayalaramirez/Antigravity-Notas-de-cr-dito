@@ -16,10 +16,11 @@ function saveData(key, data) {
   localStorage.setItem(key, JSON.stringify(data));
 }
 
-// Usuarios predeterminados de respaldo para modo offline / Netlify
 const DEFAULT_USUARIOS_FALLBACK = [
-  { id: "U01", id_usuario: "U01", nombre: "Administrador Universal", email: "admin@casaayala.com", rol: "Administrador", sucursalId: "S01", id_sucursal: "S01", nip: "4819", bloqueado: false, adminTipo: "Ambos" },
-  { id: "U02", id_usuario: "U02", nombre: "Consuelo Carrillo", email: "consuelo.carrillo2022@gmail.com", rol: "Administrador", sucursalId: "S01", id_sucursal: "S01", nip: "2526", bloqueado: false, adminTipo: "Ambos" }
+  { id: "U01", id_usuario: "U01", nombre: "Administrador Universal", email: "cansagdl@gmail.com", rol: "Administrador", sucursalId: "S01", id_sucursal: "S01", nip: "4819", bloqueado: false, adminTipo: "Ambos", telefono: "3339567196" },
+  { id: "U02", id_usuario: "U02", nombre: "Consuelo Carrillo", email: "consuelo.carrillo2022@gmail.com", rol: "Contabilidad", sucursalId: "S01", id_sucursal: "S01", nip: "1145", bloqueado: false, adminTipo: "Ninguno", telefono: "3313613035" },
+  { id: "U04", id_usuario: "U04", nombre: "Laura Sanchez", email: "laurasanchezvazquez07@gmail.com", rol: "Vendedor", sucursalId: "S01", id_sucursal: "S01", nip: "2020", bloqueado: false, adminTipo: "Ninguno", telefono: "6641234567" },
+  { id: "U48921", id_usuario: "U48921", nombre: "Araceli Escobar", email: "lafer7522@gmail.com", rol: "Vendedor", sucursalId: "S01", id_sucursal: "S01", nip: "4823", bloqueado: false, adminTipo: "Ninguno", telefono: "6647654321" }
 ];
 
 // Colección global de usuarios en memoria (con respaldo local y sincronización remota si la API responde JSON)
