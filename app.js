@@ -41,11 +41,18 @@ function ensureAllSqlUsersExist(localUsers) {
   return Array.from(userMap.values());
 }
 
+const DEFAULT_SUCURSALES_MAESTRAS = [
+  { id: "S01", nombre: "Tijuana Matriz", direccion: "Av. España #1168, Col. Moderna", activaFinanciera: true },
+  { id: "S02", nombre: "Mexicali Centro", direccion: "Blvd. Benito Juárez #450, Col. Jardines", activaFinanciera: true },
+  { id: "S03", nombre: "Ensenada Puerto", direccion: "Av. Ruiz #120, Col. Centro", activaFinanciera: false }
+];
+
 // Colección global de usuarios en memoria (asegurando siempre la disponibilidad de las cuentas espejos de SQL Server)
 let usuarios = ensureAllSqlUsersExist(loadData('ca_usuarios', DEFAULT_USUARIOS_FALLBACK));
 saveData('ca_usuarios', usuarios);
 
-let sucursales = loadData('ca_sucursales', (typeof INITIAL_SUCURSALES !== 'undefined' && INITIAL_SUCURSALES.length > 0) ? INITIAL_SUCURSALES : []);
+let sucursales = DEFAULT_SUCURSALES_MAESTRAS;
+saveData('ca_sucursales', sucursales);
 let clientes = loadData('ca_clientes', (typeof INITIAL_CLIENTES !== 'undefined' && INITIAL_CLIENTES.length > 0) ? INITIAL_CLIENTES : []);
 let operadores = loadData('ca_operadores', (typeof INITIAL_OPERADORES !== 'undefined' && INITIAL_OPERADORES.length > 0) ? INITIAL_OPERADORES : []);
 let vendedores = loadData('ca_vendedores', (typeof INITIAL_VENDEDORES !== 'undefined' && INITIAL_VENDEDORES.length > 0) ? INITIAL_VENDEDORES : []);
@@ -55,9 +62,8 @@ let notas = loadData('ca_notas', []);
 let faltantesPicking = loadData('ca_faltantes_picking', []);
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
-// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (GOOGLE CLOUD & PERMANENT STORE) ---
-const PERMANENT_CLOUD_STORE_URL = 'https://api.restful-api.dev/objects/ff808181a09d98f701a0a165bc0f0778';
-let activeCloudToken = localStorage.getItem('ca_active_cloud_token') || 'ef7f8a31491941c1af0f6681de80ffbc';
+// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (MULTI-ENTIDAD CON GOOGLE & NETLIFY) ---
+let activeCloudToken = localStorage.getItem('ca_active_cloud_token') || 'a815ef124dc748e6b23da464b133433f';
 let isSyncingWithCloud = false;
 let cloudPushTimer = null;
 let isMergingFromCloud = false;
@@ -114,50 +120,53 @@ function triggerCloudPushDebounced() {
 }
 
 async function pushToCloudStorage() {
-  const storePayload = {
-    clientes: clientes || [],
-    operadores: operadores || [],
-    vendedores: vendedores || [],
-    proveedores: proveedores || [],
-    presupuestos: presupuestos || [],
-    notas: notas || [],
-    faltantes: faltantesPicking || [],
-    usuarios: usuarios || []
-  };
+  if (!activeCloudToken) await getFreshCloudToken();
+  const baseUrl = `https://crudcrud.com/api/${activeCloudToken}`;
+  const collections = [
+    { name: 'clientes', data: clientes },
+    { name: 'operadores', data: operadores },
+    { name: 'vendedores', data: vendedores },
+    { name: 'proveedores', data: proveedores },
+    { name: 'presupuestos', data: presupuestos },
+    { name: 'notas', data: notas },
+    { name: 'faltantes', data: faltantesPicking },
+    { name: 'usuarios', data: usuarios }
+  ];
 
   let hasUploaded = false;
 
-  // 1. Publicar en Almacenamiento Permanente en la Nube Global (Restful-API 200 OK)
-  try {
-    const res = await fetch(PERMANENT_CLOUD_STORE_URL, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: 'CasaAyalaGlobalStore',
-        data: storePayload
-      })
-    });
-    if (res.ok) {
-      hasUploaded = true;
-      updateSyncStatusUI('☁️ Nube Sincronizada (Netlify)', true);
+  // Enviar entidades a la nube activa
+  for (let col of collections) {
+    if (!col.data || col.data.length === 0) continue;
+    for (let item of col.data) {
+      if (!item || !item.id) continue;
+      try {
+        const res = await fetch(`${baseUrl}/${col.name}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(item)
+        });
+        if (res.status === 201 || res.ok) {
+          hasUploaded = true;
+        } else if (res.status === 400 || res.status === 404 || res.status === 500) {
+          await getFreshCloudToken();
+          const retryUrl = `https://crudcrud.com/api/${activeCloudToken}`;
+          const retryRes = await fetch(`${retryUrl}/${col.name}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(item)
+          });
+          if (retryRes.ok || retryRes.status === 201) hasUploaded = true;
+        }
+      } catch (err) {
+        console.warn(`[Cloud Sync] Error al publicar ${col.name}:`, err);
+      }
     }
-  } catch (e) {
-    console.warn('[Cloud Sync] Error en almacén primario:', e);
   }
 
-  // 2. Publicar en Google Cloud Firebase (si está activo)
+  // Soporte Google Cloud Firebase
   if (googleCloudDb) {
     try {
-      const collections = [
-        { name: 'clientes', data: clientes },
-        { name: 'operadores', data: operadores },
-        { name: 'vendedores', data: vendedores },
-        { name: 'proveedores', data: proveedores },
-        { name: 'presupuestos', data: presupuestos },
-        { name: 'notas', data: notas },
-        { name: 'faltantes', data: faltantesPicking },
-        { name: 'usuarios', data: usuarios }
-      ];
       collections.forEach(col => {
         if (col.data && col.data.length > 0) {
           const storeObj = {};
@@ -171,9 +180,7 @@ async function pushToCloudStorage() {
         }
       });
       hasUploaded = true;
-    } catch (e) {
-      console.warn('[Google Cloud] Fallback de publicación:', e);
-    }
+    } catch (e) {}
   }
 
   if (hasUploaded) {
@@ -185,47 +192,47 @@ async function syncWithCloudStorage() {
   if (isSyncingWithCloud) return;
   isSyncingWithCloud = true;
   try {
-    let storePayload = null;
+    if (!activeCloudToken) await getFreshCloudToken();
+    const baseUrl = `https://crudcrud.com/api/${activeCloudToken}`;
+    const collections = ['clientes', 'operadores', 'vendedores', 'proveedores', 'presupuestos', 'notas', 'faltantes', 'usuarios'];
+    const storePayload = {};
+
     let hasSuccess = false;
+    let hasExpired = false;
 
-    // 1. Sincronizar desde Almacenamiento Permanente en la Nube Global (Restful-API 200 OK)
-    try {
-      const res = await fetch(PERMANENT_CLOUD_STORE_URL);
-      if (res.ok) {
-        const body = await res.json();
-        if (body && body.data && typeof body.data === 'object') {
-          storePayload = body.data;
-          hasSuccess = true;
-        }
-      }
-    } catch (e) {
-      console.warn('[Cloud Sync] Error al consultar almacén primario:', e);
-    }
-
-    // 2. Sincronizar desde Google Cloud Firebase (si está activo)
-    if (googleCloudDb) {
+    for (let colName of collections) {
       try {
-        const snapshot = await googleCloudDb.ref().once('value');
-        const val = snapshot.val();
-        if (val && typeof val === 'object') {
-          if (!storePayload) storePayload = {};
-          const collections = ['clientes', 'operadores', 'vendedores', 'proveedores', 'presupuestos', 'notas', 'faltantes', 'usuarios'];
-          collections.forEach(colName => {
-            if (val[colName]) {
-              const items = Object.values(val[colName]);
-              if (Array.isArray(items) && items.length > 0) {
-                storePayload[colName] = items;
-                hasSuccess = true;
-              }
-            }
-          });
+        const res = await fetch(`${baseUrl}/${colName}`);
+        if (res.ok) {
+          const items = await res.json();
+          if (Array.isArray(items) && items.length > 0) {
+            storePayload[colName] = items;
+            hasSuccess = true;
+          }
+        } else if (res.status === 400 || res.status === 404 || res.status === 500) {
+          hasExpired = true;
         }
-      } catch (e) {
-        console.warn('[Google Cloud] Fallback de consulta:', e);
+      } catch (e) {}
+    }
+
+    if (hasExpired && !hasSuccess) {
+      await getFreshCloudToken();
+      const retryUrl = `https://crudcrud.com/api/${activeCloudToken}`;
+      for (let colName of collections) {
+        try {
+          const res = await fetch(`${retryUrl}/${colName}`);
+          if (res.ok) {
+            const items = await res.json();
+            if (Array.isArray(items) && items.length > 0) {
+              storePayload[colName] = items;
+              hasSuccess = true;
+            }
+          }
+        } catch (e) {}
       }
     }
 
-    if (hasSuccess && storePayload) {
+    if (hasSuccess) {
       mergeAllDataFromStore(storePayload);
       updateSyncStatusUI('☁️ Nube Activa (Google & Netlify)', true);
     } else {
@@ -294,10 +301,12 @@ function mergeAllDataFromStore(store) {
     changed = true;
   }
   if (Array.isArray(store.usuarios) && store.usuarios.length > 0) {
-    usuarios = mergeArrays(usuarios, store.usuarios);
+    usuarios = ensureAllSqlUsersExist(mergeArrays(usuarios, store.usuarios));
     saveData('ca_usuarios', usuarios);
     changed = true;
   }
+  sucursales = DEFAULT_SUCURSALES_MAESTRAS;
+  saveData('ca_sucursales', sucursales);
 
   if (changed) {
     if (typeof refreshAllModuleDropdowns === 'function') refreshAllModuleDropdowns();
