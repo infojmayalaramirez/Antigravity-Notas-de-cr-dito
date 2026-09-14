@@ -39,11 +39,11 @@ let notas = loadData('ca_notas', []);
 let faltantesPicking = loadData('ca_faltantes_picking', []);
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
-// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (MULTI-ENDPOINT CLOUD SYNC PARA NETLIFY Y MÓVILES) ---
+// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (NETLIFY BLOBS NATIVE DB & MULTI-ENDPOINT CLOUD SYNC) ---
 const CLOUD_SYNC_ENDPOINTS = [
+  '/api/store',
   'https://api.restful-api.dev/objects/ff808181a067127101a0992aa08e062e',
-  'https://crudcrud.com/api/69c1452c12544c3fb83a92efdcbf59b4/store',
-  'https://crudcrud.com/api/afd772d634324c1d82d0652bdc0fb2e8/store'
+  'https://crudcrud.com/api/69c1452c12544c3fb83a92efdcbf59b4/store'
 ];
 
 let isSyncingWithCloud = false;
