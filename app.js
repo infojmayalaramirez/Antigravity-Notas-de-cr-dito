@@ -41,9 +41,8 @@ let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
 // --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (MULTI-ENDPOINT CLOUD SYNC PARA NETLIFY Y MÓVILES) ---
 const CLOUD_SYNC_ENDPOINTS = [
-  'https://api.restful-api.dev/objects/ff808181a067127101a0992aa08e062e',
-  'https://crudcrud.com/api/69c1452c12544c3fb83a92efdcbf59b4/store',
-  'https://crudcrud.com/api/afd772d634324c1d82d0652bdc0fb2e8/store'
+  'https://crudcrud.com/api/df7ec2302bff40bbbfb1109e560d7b07/store',
+  'https://api.restful-api.dev/objects/ff808181a067127101a0992aa08e062e'
 ];
 
 let isSyncingWithCloud = false;
