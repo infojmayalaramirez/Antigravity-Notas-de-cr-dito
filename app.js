@@ -195,51 +195,74 @@ async function syncWithCloudStorage() {
   }
 }
 
-// Aplica el almacén unificado sobreescribiendo cachés obsoletos por dispositivo
+// Aplica el almacén unificado protegiendo los catálogos y combinando datos sin pérdidas
+function safeMergeArrays(localArr, cloudArr) {
+  const map = new Map();
+  (localArr || []).forEach(item => {
+    if (item && (item.id || item.codigo || item.id_cliente || item.nombre)) {
+      const key = String(item.id || item.codigo || item.id_cliente || item.nombre);
+      map.set(key, item);
+    }
+  });
+  (cloudArr || []).forEach(item => {
+    if (item && (item.id || item.codigo || item.id_cliente || item.nombre)) {
+      const key = String(item.id || item.codigo || item.id_cliente || item.nombre);
+      map.set(key, { ...map.get(key), ...item });
+    }
+  });
+  return Array.from(map.values());
+}
+
 function applyServerMasterStore(store) {
-  if (!store) return;
+  if (!store || typeof store !== 'object') return;
   isMergingFromCloud = true;
 
   let changed = false;
 
   if (Array.isArray(store.clientes)) {
-    clientes = store.clientes;
-    saveData('ca_clientes', clientes);
-    changed = true;
+    const merged = safeMergeArrays(clientes, store.clientes);
+    if (merged.length > 0 || clientes.length > 0) {
+      clientes = merged;
+      saveData('ca_clientes', clientes);
+      changed = true;
+    }
   }
   if (Array.isArray(store.notas)) {
-    notas = store.notas;
-    saveData('ca_notas', notas);
-    changed = true;
+    const merged = safeMergeArrays(notas, store.notas);
+    if (merged.length > 0 || notas.length > 0) {
+      notas = merged;
+      saveData('ca_notas', notas);
+      changed = true;
+    }
   }
   if (Array.isArray(store.operadores)) {
-    operadores = store.operadores;
+    operadores = safeMergeArrays(operadores, store.operadores);
     saveData('ca_operadores', operadores);
     changed = true;
   }
   if (Array.isArray(store.vendedores)) {
-    vendedores = store.vendedores;
+    vendedores = safeMergeArrays(vendedores, store.vendedores);
     saveData('ca_vendedores', vendedores);
     changed = true;
   }
   if (Array.isArray(store.proveedores)) {
-    proveedores = store.proveedores;
+    proveedores = safeMergeArrays(proveedores, store.proveedores);
     saveData('ca_proveedores', proveedores);
     changed = true;
   }
   if (Array.isArray(store.presupuestos)) {
-    presupuestos = store.presupuestos;
+    presupuestos = safeMergeArrays(presupuestos, store.presupuestos);
     saveData('ca_presupuestos', presupuestos);
     changed = true;
   }
   if (Array.isArray(store.faltantes)) {
-    faltantesPicking = store.faltantes;
+    faltantesPicking = safeMergeArrays(faltantesPicking, store.faltantes);
     saveData('ca_faltantes_picking', faltantesPicking);
     changed = true;
   }
 
   // Garantizar SIEMPRE los 4 usuarios espejo de SQL Server
-  usuarios = ensureAllSqlUsersExist(Array.isArray(store.usuarios) ? store.usuarios : usuarios);
+  usuarios = ensureAllSqlUsersExist(Array.isArray(store.usuarios) ? safeMergeArrays(usuarios, store.usuarios) : usuarios);
   saveData('ca_usuarios', usuarios);
 
   // Garantizar SIEMPRE estrictamente las 3 sucursales maestras
