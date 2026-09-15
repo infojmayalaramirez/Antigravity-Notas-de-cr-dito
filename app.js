@@ -62,7 +62,7 @@ let notas = loadData('ca_notas', []);
 let faltantesPicking = loadData('ca_faltantes_picking', []);
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
-// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (GOOGLE CLOUD & NETLIFY SERVERLESS) ---
+// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (GOOGLE CLOUD FIREBASE REALTIME WEBSOCKETS) ---
 let isSyncingWithCloud = false;
 let cloudPushTimer = null;
 let isMergingFromCloud = false;
@@ -77,7 +77,18 @@ if (typeof firebase !== 'undefined') {
       });
     }
     googleCloudDb = firebase.database();
-    console.log('[Google Cloud] Conectado exitosamente a la Nube de Google Firebase');
+    console.log('[Google Cloud] Conectado exitosamente a la Nube de Google Firebase Realtime Database');
+
+    // Escuchador WebSocket en tiempo real (< 100ms de latencia entre dispositivos sin consumir créditos de Netlify)
+    googleCloudDb.ref('store').on('value', (snapshot) => {
+      if (snapshot.exists()) {
+        const val = snapshot.val();
+        if (val && typeof val === 'object') {
+          applyServerMasterStore(val);
+          updateSyncStatusUI('☁️ Google Firebase Realtime Activo', true);
+        }
+      }
+    });
   } catch (e) {
     console.warn('[Google Cloud] Conexión activa:', e.message);
   }
@@ -98,7 +109,7 @@ function triggerCloudPushDebounced() {
   }, 400);
 }
 
-// Publica el almacén de datos unificado a la Nube (Netlify Serverless + Google Firebase)
+// Publica el almacén de datos unificado a la Nube (Google Firebase + Netlify Backup)
 async function pushToCloudStorage() {
   const payload = {
     clientes: clientes || [],
@@ -115,21 +126,7 @@ async function pushToCloudStorage() {
 
   let pushSuccess = false;
 
-  // 1. Envío a Endpoint Netlify Serverless Cloud
-  try {
-    const res = await fetch('/.netlify/functions/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    if (res.ok) {
-      pushSuccess = true;
-    }
-  } catch (err) {
-    console.warn('[Cloud Sync] Error al publicar en Netlify Cloud:', err);
-  }
-
-  // 2. Envío a Google Cloud Firebase
+  // 1. Envío directo en tiempo real a Google Cloud Firebase Realtime Database
   if (googleCloudDb) {
     try {
       googleCloudDb.ref('store').set(payload);
@@ -139,8 +136,20 @@ async function pushToCloudStorage() {
     }
   }
 
+  // 2. Respaldo secundario a Netlify Serverless Cloud (si está disponible)
+  try {
+    const res = await fetch('/.netlify/functions/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (res.ok) {
+      pushSuccess = true;
+    }
+  } catch (err) {}
+
   if (pushSuccess) {
-    updateSyncStatusUI('☁️ Nube Activa (Google & Netlify)', true);
+    updateSyncStatusUI('☁️ Google Firebase Realtime Activo', true);
   } else {
     updateSyncStatusUI('⚡ Red Local / Servidor', false);
   }
@@ -153,18 +162,8 @@ async function syncWithCloudStorage() {
   try {
     let cloudStore = null;
 
-    // 1. Lectura desde Netlify Cloud Endpoint
-    try {
-      const res = await fetch('/.netlify/functions/sync', { cache: 'no-store' });
-      if (res.ok) {
-        cloudStore = await res.json();
-      }
-    } catch (e) {
-      console.warn('[Cloud Sync] Netlify endpoint inaccesible:', e);
-    }
-
-    // 2. Lectura desde Google Cloud Firebase (como respaldo directo)
-    if (!cloudStore && googleCloudDb) {
+    // 1. Lectura desde Google Cloud Firebase (como fuente principal)
+    if (googleCloudDb) {
       try {
         const snapshot = await googleCloudDb.ref('store').once('value');
         if (snapshot.exists()) {
@@ -173,9 +172,19 @@ async function syncWithCloudStorage() {
       } catch (e) {}
     }
 
+    // 2. Lectura desde Netlify Cloud Endpoint (como respaldo)
+    if (!cloudStore) {
+      try {
+        const res = await fetch('/.netlify/functions/sync', { cache: 'no-store' });
+        if (res.ok) {
+          cloudStore = await res.json();
+        }
+      } catch (e) {}
+    }
+
     if (cloudStore && (cloudStore.clientes || cloudStore.notas || cloudStore.usuarios)) {
       applyServerMasterStore(cloudStore);
-      updateSyncStatusUI('☁️ Nube Activa (Google & Netlify)', true);
+      updateSyncStatusUI('☁️ Google Firebase Realtime Activo', true);
     } else {
       updateSyncStatusUI('⚡ Red Local / Servidor', false);
     }
@@ -380,7 +389,7 @@ window.importarDatosJSON = function(event) {
 
 // Sincronización inicial y temporizador automático cada 3 segundos (y al enfocar pantalla o cambiar pestaña)
 fetchAPIData();
-setInterval(fetchAPIData, 3000);
+setInterval(fetchAPIData, 60000);
 window.addEventListener('focus', () => { fetchAPIData(); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') fetchAPIData(); });
 
