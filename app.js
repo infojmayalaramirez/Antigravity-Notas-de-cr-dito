@@ -62,13 +62,14 @@ let notas = loadData('ca_notas', []);
 let faltantesPicking = loadData('ca_faltantes_picking', []);
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
-// --- SISTEMA DE SINCRONIZACIÓN CON SERVIDOR SQL SERVER REMOTO DE OFICINA & NUBE ---
+// --- SISTEMA DE SINCRONIZACIÓN MULTI-FUENTE UNIFICADO PARA TODAS LAS ENTIDADES ---
+const LOCAL_SERVER_IP = 'http://192.168.100.9:3000';
 const TUNNEL_API_BASE = 'https://casaayala-notas-db.loca.lt';
 let isSyncingWithCloud = false;
 let cloudPushTimer = null;
 let isMergingFromCloud = false;
 
-// Inicialización de Google Cloud Firebase (como respaldo secundario)
+// Inicialización de Google Cloud Firebase (como respaldo)
 let googleCloudDb = null;
 if (typeof firebase !== 'undefined') {
   try {
@@ -96,7 +97,7 @@ function triggerCloudPushDebounced() {
   }, 400);
 }
 
-// Publica el almacén unificado al Servidor SQL Server Remoto de Oficina
+// Publica el almacén unificado completo (Todas las entidades) a Servidor Local + Nube
 async function pushToCloudStorage() {
   const payload = {
     clientes: clientes || [],
@@ -113,7 +114,27 @@ async function pushToCloudStorage() {
 
   let pushSuccess = false;
 
-  // 1. Envío al Servidor SQL Server Remoto de la Oficina vía Túnel HTTPS
+  // 1. Envío a Servidor Local de Oficina (Red Wi-Fi Local)
+  try {
+    const res = await fetch(`${LOCAL_SERVER_IP}/api/catalogos/sync-all`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (res.ok) pushSuccess = true;
+  } catch (err) {}
+
+  // 2. Envío a Netlify Serverless Cloud Endpoint
+  try {
+    const res = await fetch('/.netlify/functions/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (res.ok) pushSuccess = true;
+  } catch (err) {}
+
+  // 3. Envío a Túnel HTTPS Remoto
   try {
     const res = await fetch(`${TUNNEL_API_BASE}/api/catalogos/sync-all`, {
       method: 'POST',
@@ -125,14 +146,10 @@ async function pushToCloudStorage() {
       },
       body: JSON.stringify(payload)
     });
-    if (res.ok) {
-      pushSuccess = true;
-    }
-  } catch (err) {
-    console.warn('[SQL Server Remote] Error al enviar a servidor remoto:', err);
-  }
+    if (res.ok) pushSuccess = true;
+  } catch (err) {}
 
-  // 2. Respaldo secundario a Google Cloud Firebase
+  // 4. Envío a Google Cloud Firebase
   if (googleCloudDb) {
     try {
       googleCloudDb.ref('store').set(payload);
@@ -141,40 +158,58 @@ async function pushToCloudStorage() {
   }
 
   if (pushSuccess) {
-    updateSyncStatusUI('🖥️ SQL Server Oficina Activo', true);
+    updateSyncStatusUI('🖥️ Servidor Red Local / Nube Activo', true);
   } else {
     updateSyncStatusUI('⚡ Modo Local / Esperando Servidor', false);
   }
 }
 
-// Lee el almacén unificado desde el Servidor SQL Server Remoto de Oficina
+// Lee el almacén unificado desde la mejor fuente disponible (Servidor Local Wi-Fi -> Netlify -> Túnel -> Firebase)
 async function syncWithCloudStorage() {
   if (isSyncingWithCloud) return;
   isSyncingWithCloud = true;
   try {
     let cloudStore = null;
 
-    // 1. Consulta al Servidor SQL Server Remoto de Oficina
+    // 1. Servidor Local Red Wi-Fi (Ultra rápido < 10ms)
     try {
-      const res = await fetch(`${TUNNEL_API_BASE}/api/catalogos/all`, {
-        headers: {
-          'Accept': 'application/json',
-          'Bypass-Tunnel-Remainder': 'true',
-          'bypass-tunnel-reminder': 'true'
-        },
-        cache: 'no-store'
-      });
+      const res = await fetch(`${LOCAL_SERVER_IP}/api/catalogos/all`, { cache: 'no-store' });
       if (res.ok) {
-        const contentType = res.headers.get('content-type') || '';
-        if (contentType.includes('application/json')) {
+        cloudStore = await res.json();
+      }
+    } catch (e) {}
+
+    // 2. Netlify Cloud Endpoint
+    if (!cloudStore) {
+      try {
+        const res = await fetch('/.netlify/functions/sync', { cache: 'no-store' });
+        if (res.ok) {
           cloudStore = await res.json();
         }
-      }
-    } catch (e) {
-      console.warn('[SQL Server Remote] Error de conexión:', e);
+      } catch (e) {}
     }
 
-    // 2. Respaldo en Google Cloud Firebase si el servidor local no respondió
+    // 3. Túnel Remoto HTTPS
+    if (!cloudStore) {
+      try {
+        const res = await fetch(`${TUNNEL_API_BASE}/api/catalogos/all`, {
+          headers: {
+            'Accept': 'application/json',
+            'Bypass-Tunnel-Remainder': 'true',
+            'bypass-tunnel-reminder': 'true'
+          },
+          cache: 'no-store'
+        });
+        if (res.ok) {
+          const contentType = res.headers.get('content-type') || '';
+          if (contentType.includes('application/json')) {
+            cloudStore = await res.json();
+          }
+        }
+      } catch (e) {}
+    }
+
+    // 4. Google Cloud Firebase
     if (!cloudStore && googleCloudDb) {
       try {
         const snapshot = await googleCloudDb.ref('store').once('value');
@@ -186,12 +221,12 @@ async function syncWithCloudStorage() {
 
     if (cloudStore && typeof cloudStore === 'object') {
       applyServerMasterStore(cloudStore);
-      updateSyncStatusUI('🖥️ SQL Server Oficina Activo', true);
+      updateSyncStatusUI('🖥️ Servidor Red Local / Nube Activo', true);
     } else {
       updateSyncStatusUI('⚡ Modo Local / Esperando Servidor', false);
     }
   } catch (err) {
-    console.warn('[Cloud Sync] Error al sincronizar con el servidor:', err);
+    console.warn('[Cloud Sync] Error al sincronizar:', err);
   } finally {
     isSyncingWithCloud = false;
   }
@@ -201,14 +236,14 @@ async function syncWithCloudStorage() {
 function safeMergeArrays(localArr, cloudArr) {
   const map = new Map();
   (localArr || []).forEach(item => {
-    if (item && (item.id || item.codigo || item.id_cliente || item.nombre)) {
-      const key = String(item.id || item.codigo || item.id_cliente || item.nombre);
+    if (item && (item.id || item.codigo || item.id_cliente || item.id_usuario || item.nombre)) {
+      const key = String(item.id || item.codigo || item.id_cliente || item.id_usuario || item.nombre);
       map.set(key, item);
     }
   });
   (cloudArr || []).forEach(item => {
-    if (item && (item.id || item.codigo || item.id_cliente || item.nombre)) {
-      const key = String(item.id || item.codigo || item.id_cliente || item.nombre);
+    if (item && (item.id || item.codigo || item.id_cliente || item.id_usuario || item.nombre)) {
+      const key = String(item.id || item.codigo || item.id_cliente || item.id_usuario || item.nombre);
       map.set(key, { ...map.get(key), ...item });
     }
   });
@@ -263,7 +298,7 @@ function applyServerMasterStore(store) {
     changed = true;
   }
 
-  // Garantizar SIEMPRE los 4 usuarios espejo de SQL Server
+  // Garantizar SIEMPRE los usuarios espejo de SQL Server + nuevos usuarios personalizados
   usuarios = ensureAllSqlUsersExist(Array.isArray(store.usuarios) ? safeMergeArrays(usuarios, store.usuarios) : usuarios);
   saveData('ca_usuarios', usuarios);
 
@@ -276,6 +311,11 @@ function applyServerMasterStore(store) {
     if (typeof renderCatalogosTables === 'function') renderCatalogosTables();
     if (typeof renderNotasFisicasList === 'function') renderNotasFisicasList();
     if (typeof renderNotasFinancierasList === 'function') renderNotasFinancierasList();
+    if (typeof renderUsuariosTable === 'function') renderUsuariosTable();
+    if (typeof renderSucursalesTable === 'function') renderSucursalesTable();
+    if (typeof renderPresupuestosTable === 'function') renderPresupuestosTable();
+    if (typeof renderFaltantesPickingTable === 'function') renderFaltantesPickingTable();
+    if (typeof updateDashboard === 'function') updateDashboard();
   }
   isMergingFromCloud = false;
 }

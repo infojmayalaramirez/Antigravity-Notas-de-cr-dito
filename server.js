@@ -17,13 +17,17 @@ function loadStoreFromFile() {
                 operadores: Array.isArray(data.operadores) ? data.operadores : [],
                 vendedores: Array.isArray(data.vendedores) ? data.vendedores : [],
                 proveedores: Array.isArray(data.proveedores) ? data.proveedores : [],
-                presupuestos: Array.isArray(data.presupuestos) ? data.presupuestos : []
+                presupuestos: Array.isArray(data.presupuestos) ? data.presupuestos : [],
+                usuarios: Array.isArray(data.usuarios) ? data.usuarios : [],
+                sucursales: Array.isArray(data.sucursales) ? data.sucursales : [],
+                notas: Array.isArray(data.notas) ? data.notas : [],
+                faltantes: Array.isArray(data.faltantes) ? data.faltantes : []
             };
         }
     } catch (err) {
         console.warn('[Server Store] Error al leer catalog_store.json:', err.message);
     }
-    return { clientes: [], operadores: [], vendedores: [], proveedores: [], presupuestos: [] };
+    return { clientes: [], operadores: [], vendedores: [], proveedores: [], presupuestos: [], usuarios: [], sucursales: [], notas: [], faltantes: [] };
 }
 
 function saveStoreToFile(storeData) {
@@ -450,12 +454,14 @@ app.delete('/api/sucursales/:id', async (req, res) => {
 app.get('/api/catalogos/all', async (req, res) => {
     try {
         const pool = await sql.connect(dbConfig);
-        const [cliRes, opeRes, venRes, provRes, presRes] = await Promise.all([
+        const [cliRes, opeRes, venRes, provRes, presRes, usuRes, sucRes] = await Promise.all([
             pool.request().query('SELECT * FROM dbo.Clientes'),
             pool.request().query('SELECT * FROM dbo.Operadores'),
             pool.request().query('SELECT * FROM dbo.Vendedores'),
             pool.request().query('SELECT * FROM dbo.Proveedores'),
-            pool.request().query('SELECT * FROM dbo.Presupuestos')
+            pool.request().query('SELECT * FROM dbo.Presupuestos'),
+            pool.request().query('SELECT id_usuario AS id, id_usuario, nombre, email, rol, id_sucursal AS sucursalId, nip, bloqueado, admin_tipo AS adminTipo, telefono, direccion FROM dbo.Usuarios'),
+            pool.request().query('SELECT id_sucursal AS id, id_sucursal, nombre, direccion, activa_financiera AS activaFinanciera FROM dbo.Sucursales')
         ]);
 
         const dbStore = {
@@ -474,7 +480,9 @@ app.get('/api/catalogos/all', async (req, res) => {
                 tipoPromo: p.tipo_promo || 'clientes_exclusivos',
                 eliminado: !!p.eliminado
             })),
-            presupuestos: presRes.recordset.map(pr => ({ id: pr.id_presupuesto, sucursalId: pr.id_sucursal, mesAnio: pr.mes_anio, monto: parseFloat(pr.monto || 0) }))
+            presupuestos: presRes.recordset.map(pr => ({ id: pr.id_presupuesto, sucursalId: pr.id_sucursal, mesAnio: pr.mes_anio, monto: parseFloat(pr.monto || 0) })),
+            usuarios: usuRes.recordset.map(u => ({ id: u.id_usuario || u.id, id_usuario: u.id_usuario || u.id, nombre: u.nombre, email: u.email, rol: u.rol, sucursalId: u.sucursalId || 'S01', id_sucursal: u.sucursalId || 'S01', nip: u.nip, bloqueado: !!u.bloqueado, adminTipo: u.adminTipo || 'Ninguno', telefono: u.telefono || '', direccion: u.direccion || '' })),
+            sucursales: sucRes.recordset.map(s => ({ id: s.id_sucursal || s.id, id_sucursal: s.id_sucursal || s.id, nombre: s.nombre, direccion: s.direccion || '', activaFinanciera: !!s.activaFinanciera }))
         };
 
         catalogStore.clientes = mergeArray(catalogStore.clientes, dbStore.clientes);
@@ -482,6 +490,8 @@ app.get('/api/catalogos/all', async (req, res) => {
         catalogStore.vendedores = mergeArray(catalogStore.vendedores, dbStore.vendedores);
         catalogStore.proveedores = mergeArray(catalogStore.proveedores, dbStore.proveedores);
         catalogStore.presupuestos = mergeArray(catalogStore.presupuestos, dbStore.presupuestos);
+        catalogStore.usuarios = mergeArray(catalogStore.usuarios, dbStore.usuarios);
+        catalogStore.sucursales = mergeArray(catalogStore.sucursales, dbStore.sucursales);
         saveStoreToFile(catalogStore);
 
         return res.json(catalogStore);
@@ -491,7 +501,7 @@ app.get('/api/catalogos/all', async (req, res) => {
     }
 });
 
-// POST /api/catalogos/sync-all - Sincronización masiva de todos los catálogos desde dispositivos
+// POST /api/catalogos/sync-all - Sincronización masiva unificada de TODOS los módulos desde cualquier dispositivo
 app.post('/api/catalogos/sync-all', async (req, res) => {
     try {
         const payload = req.body || {};
@@ -500,84 +510,51 @@ app.post('/api/catalogos/sync-all', async (req, res) => {
         if (payload.vendedores) catalogStore.vendedores = mergeArray(catalogStore.vendedores, payload.vendedores);
         if (payload.proveedores) catalogStore.proveedores = mergeArray(catalogStore.proveedores, payload.proveedores);
         if (payload.presupuestos) catalogStore.presupuestos = mergeArray(catalogStore.presupuestos, payload.presupuestos);
+        if (payload.usuarios) catalogStore.usuarios = mergeArray(catalogStore.usuarios, payload.usuarios);
+        if (payload.sucursales) catalogStore.sucursales = mergeArray(catalogStore.sucursales, payload.sucursales);
+        if (payload.notas) catalogStore.notas = mergeArray(catalogStore.notas, payload.notas);
+        if (payload.faltantes) catalogStore.faltantes = mergeArray(catalogStore.faltantes, payload.faltantes);
 
         saveStoreToFile(catalogStore);
 
-        // Intentar reflejar en SQL Server
+        // Reflejar cambios en SQL Server Express
         try {
             const pool = await sql.connect(dbConfig);
-            for (const c of catalogStore.clientes) {
-                await pool.request()
-                    .input('id', sql.VarChar, c.id)
-                    .input('nombre', sql.VarChar, c.nombre)
-                    .input('codigo', sql.VarChar, c.codigoInterno || '')
-                    .input('descto', sql.Bit, c.tieneDerechoDescuento ? 1 : 0)
-                    .input('eliminado', sql.Bit, c.eliminado ? 1 : 0)
-                    .query(`
-                        IF EXISTS (SELECT 1 FROM dbo.Clientes WHERE id_cliente = @id)
-                            UPDATE dbo.Clientes SET nombre=@nombre, codigo_interno=@codigo, tiene_derecho_descuento=@descto, eliminado=@eliminado WHERE id_cliente=@id
-                        ELSE
-                            INSERT INTO dbo.Clientes (id_cliente, nombre, codigo_interno, tiene_derecho_descuento, eliminado) VALUES (@id, @nombre, @codigo, @descto, @eliminado)
-                    `);
+            if (Array.isArray(payload.usuarios)) {
+                for (const u of payload.usuarios) {
+                    if (u && (u.id || u.id_usuario)) {
+                        const uId = String(u.id || u.id_usuario);
+                        await pool.request()
+                            .input('id', sql.VarChar, uId)
+                            .input('nombre', sql.VarChar, u.nombre || 'Usuario')
+                            .input('email', sql.VarChar, u.email || uId)
+                            .input('rol', sql.VarChar, u.rol || 'Vendedor')
+                            .input('sucursal', sql.VarChar, u.sucursalId || u.id_sucursal || 'S01')
+                            .input('nip', sql.VarChar, String(u.nip || '1234'))
+                            .input('bloqueado', sql.Bit, u.bloqueado ? 1 : 0)
+                            .input('admin_tipo', sql.VarChar, u.adminTipo || 'Ninguno')
+                            .input('telefono', sql.VarChar, u.telefono || '')
+                            .input('direccion', sql.VarChar, u.direccion || '')
+                            .query(`
+                                IF EXISTS (SELECT 1 FROM dbo.Usuarios WHERE id_usuario = @id)
+                                    UPDATE dbo.Usuarios SET nombre=@nombre, email=@email, rol=@rol, id_sucursal=@sucursal, nip=@nip, bloqueado=@bloqueado, admin_tipo=@admin_tipo, telefono=@telefono, direccion=@direccion WHERE id_usuario=@id
+                                ELSE
+                                    INSERT INTO dbo.Usuarios (id_usuario, nombre, email, rol, id_sucursal, nip, bloqueado, admin_tipo, telefono, direccion) VALUES (@id, @nombre, @email, @rol, @sucursal, @nip, @bloqueado, @admin_tipo, @telefono, @direccion)
+                            `);
+                    }
+                }
             }
-            for (const o of catalogStore.operadores) {
-                await pool.request()
-                    .input('id', sql.VarChar, o.id)
-                    .input('nombre', sql.VarChar, o.nombre)
-                    .input('puesto', sql.VarChar, o.puesto || '')
-                    .input('eliminado', sql.Bit, o.eliminado ? 1 : 0)
-                    .query(`
-                        IF EXISTS (SELECT 1 FROM dbo.Operadores WHERE id_operador = @id)
-                            UPDATE dbo.Operadores SET nombre=@nombre, puesto=@puesto, eliminado=@eliminado WHERE id_operador=@id
-                        ELSE
-                            INSERT INTO dbo.Operadores (id_operador, nombre, puesto, eliminado) VALUES (@id, @nombre, @puesto, @eliminado)
-                    `);
-            }
-            for (const v of catalogStore.vendedores) {
-                await pool.request()
-                    .input('id', sql.VarChar, v.id)
-                    .input('nombre', sql.VarChar, v.nombre)
-                    .input('sucursal', sql.VarChar, v.sucursalId || 'S01')
-                    .input('usuario', sql.VarChar, v.userId || null)
-                    .input('eliminado', sql.Bit, v.eliminado ? 1 : 0)
-                    .query(`
-                        IF EXISTS (SELECT 1 FROM dbo.Vendedores WHERE id_vendedor = @id)
-                            UPDATE dbo.Vendedores SET nombre=@nombre, id_sucursal=@sucursal, id_usuario=@usuario, eliminado=@eliminado WHERE id_vendedor=@id
-                        ELSE
-                            INSERT INTO dbo.Vendedores (id_vendedor, nombre, id_sucursal, id_usuario, eliminado) VALUES (@id, @nombre, @sucursal, @usuario, @eliminado)
-                    `);
-            }
-            for (const p of catalogStore.proveedores) {
-                await pool.request()
-                    .input('id', sql.VarChar, p.id)
-                    .input('nombre', sql.VarChar, p.nombre)
-                    .input('desc1', sql.Decimal(18,2), p.desc1 || 0)
-                    .input('desc2', sql.Decimal(18,2), p.desc2 || 0)
-                    .input('desc3', sql.Decimal(18,2), p.desc3 || 0)
-                    .input('cajon', sql.VarChar, JSON.stringify(p.clientesCajon || []))
-                    .input('inicio', sql.VarChar, p.fechaInicio || '')
-                    .input('fin', sql.VarChar, p.fechaFin || '')
-                    .input('promo', sql.VarChar, p.tipoPromo || 'clientes_exclusivos')
-                    .input('eliminado', sql.Bit, p.eliminado ? 1 : 0)
-                    .query(`
-                        IF EXISTS (SELECT 1 FROM dbo.Proveedores WHERE id_proveedor = @id)
-                            UPDATE dbo.Proveedores SET nombre=@nombre, desc1=@desc1, desc2=@desc2, desc3=@desc3, clientes_cajon_json=@cajon, fecha_inicio=@inicio, fecha_fin=@fin, tipo_promo=@promo, eliminado=@eliminado WHERE id_proveedor=@id
-                        ELSE
-                            INSERT INTO dbo.Proveedores (id_proveedor, nombre, desc1, desc2, desc3, clientes_cajon_json, fecha_inicio, fecha_fin, tipo_promo, eliminado) VALUES (@id, @nombre, @desc1, @desc2, @desc3, @cajon, @inicio, @fin, @promo, @eliminado)
-                    `);
-            }
-        } catch (sqlErr) {
-            console.warn('[SQL Server] No se pudo guardar sync en SQL:', sqlErr.message);
+        } catch (e) {
+            console.warn('[SQL Server] Error al sincronizar usuarios en SQL:', e.message);
         }
 
         return res.json({ success: true, store: catalogStore });
-    } catch (error) {
-        console.error('Error en POST /api/catalogos/sync-all:', error.message);
-        return res.status(500).json({ success: false, error: error.message });
+    } catch (err) {
+        console.error('Error en POST /api/catalogos/sync-all:', err.message);
+        return res.status(500).json({ success: false, error: err.message });
     }
 });
 
-// Endpoints individuales de Clientes
 app.get('/api/clientes', (req, res) => res.json(catalogStore.clientes));
 app.post('/api/clientes', (req, res) => {
     const item = req.body;
