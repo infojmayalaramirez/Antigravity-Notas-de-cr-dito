@@ -62,12 +62,13 @@ let notas = loadData('ca_notas', []);
 let faltantesPicking = loadData('ca_faltantes_picking', []);
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
-// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE GLOBAL (GOOGLE CLOUD FIREBASE REALTIME WEBSOCKETS) ---
+// --- SISTEMA DE SINCRONIZACIÓN CON SERVIDOR SQL SERVER REMOTO DE OFICINA & NUBE ---
+const TUNNEL_API_BASE = 'https://casaayala-notas-db.loca.lt';
 let isSyncingWithCloud = false;
 let cloudPushTimer = null;
 let isMergingFromCloud = false;
 
-// Inicialización de la Nube de Google Firebase Realtime Database
+// Inicialización de Google Cloud Firebase (como respaldo secundario)
 let googleCloudDb = null;
 if (typeof firebase !== 'undefined') {
   try {
@@ -77,27 +78,13 @@ if (typeof firebase !== 'undefined') {
       });
     }
     googleCloudDb = firebase.database();
-    console.log('[Google Cloud] Conectado exitosamente a la Nube de Google Firebase Realtime Database');
-
-    // Escuchador WebSocket en tiempo real (< 100ms de latencia entre dispositivos sin consumir créditos de Netlify)
-    googleCloudDb.ref('store').on('value', (snapshot) => {
-      if (snapshot.exists()) {
-        const val = snapshot.val();
-        if (val && typeof val === 'object') {
-          applyServerMasterStore(val);
-          updateSyncStatusUI('☁️ Google Firebase Realtime Activo', true);
-        }
-      }
-    });
-  } catch (e) {
-    console.warn('[Google Cloud] Conexión activa:', e.message);
-  }
+  } catch (e) {}
 }
 
 function updateSyncStatusUI(statusText, isSuccess = true) {
   const el = document.getElementById('cloud-sync-status-indicator');
   if (el) {
-    el.innerHTML = `<i class="fa-solid fa-cloud"></i> ${statusText}`;
+    el.innerHTML = `<i class="fa-solid fa-server"></i> ${statusText}`;
     el.style.color = isSuccess ? '#ffffff' : '#fde047';
   }
 }
@@ -109,7 +96,7 @@ function triggerCloudPushDebounced() {
   }, 400);
 }
 
-// Publica el almacén de datos unificado a la Nube (Google Firebase + Netlify Backup)
+// Publica el almacén unificado al Servidor SQL Server Remoto de Oficina
 async function pushToCloudStorage() {
   const payload = {
     clientes: clientes || [],
@@ -126,44 +113,60 @@ async function pushToCloudStorage() {
 
   let pushSuccess = false;
 
-  // 1. Envío directo en tiempo real a Google Cloud Firebase Realtime Database
-  if (googleCloudDb) {
-    try {
-      googleCloudDb.ref('store').set(payload);
-      pushSuccess = true;
-    } catch (e) {
-      console.warn('[Google Cloud] Error en Firebase push:', e);
-    }
-  }
-
-  // 2. Respaldo secundario a Netlify Serverless Cloud (si está disponible)
+  // 1. Envío al Servidor SQL Server Remoto de la Oficina vía Túnel HTTPS
   try {
-    const res = await fetch('/.netlify/functions/sync', {
+    const res = await fetch(`${TUNNEL_API_BASE}/api/catalogos/sync-all`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Bypass-Tunnel-Remainder': 'true'
+      },
       body: JSON.stringify(payload)
     });
     if (res.ok) {
       pushSuccess = true;
     }
-  } catch (err) {}
+  } catch (err) {
+    console.warn('[SQL Server Remote] Error al enviar a servidor remoto:', err);
+  }
+
+  // 2. Respaldo secundario a Google Cloud Firebase
+  if (googleCloudDb) {
+    try {
+      googleCloudDb.ref('store').set(payload);
+      pushSuccess = true;
+    } catch (e) {}
+  }
 
   if (pushSuccess) {
-    updateSyncStatusUI('☁️ Google Firebase Realtime Activo', true);
+    updateSyncStatusUI('🖥️ SQL Server Oficina Activo', true);
   } else {
-    updateSyncStatusUI('⚡ Red Local / Servidor', false);
+    updateSyncStatusUI('⚡ Modo Local / Esperando Servidor', false);
   }
 }
 
-// Lee el almacén de datos unificado de la Nube y sobreescribe los cachés locales
+// Lee el almacén unificado desde el Servidor SQL Server Remoto de Oficina
 async function syncWithCloudStorage() {
   if (isSyncingWithCloud) return;
   isSyncingWithCloud = true;
   try {
     let cloudStore = null;
 
-    // 1. Lectura desde Google Cloud Firebase (como fuente principal)
-    if (googleCloudDb) {
+    // 1. Consulta al Servidor SQL Server Remoto de Oficina
+    try {
+      const res = await fetch(`${TUNNEL_API_BASE}/api/catalogos/all`, {
+        headers: { 'Bypass-Tunnel-Remainder': 'true' },
+        cache: 'no-store'
+      });
+      if (res.ok) {
+        cloudStore = await res.json();
+      }
+    } catch (e) {
+      console.warn('[SQL Server Remote] Error de conexión:', e);
+    }
+
+    // 2. Respaldo en Google Cloud Firebase si el servidor local no respondió
+    if (!cloudStore && googleCloudDb) {
       try {
         const snapshot = await googleCloudDb.ref('store').once('value');
         if (snapshot.exists()) {
@@ -172,24 +175,14 @@ async function syncWithCloudStorage() {
       } catch (e) {}
     }
 
-    // 2. Lectura desde Netlify Cloud Endpoint (como respaldo)
-    if (!cloudStore) {
-      try {
-        const res = await fetch('/.netlify/functions/sync', { cache: 'no-store' });
-        if (res.ok) {
-          cloudStore = await res.json();
-        }
-      } catch (e) {}
-    }
-
-    if (cloudStore && (cloudStore.clientes || cloudStore.notas || cloudStore.usuarios)) {
+    if (cloudStore && typeof cloudStore === 'object') {
       applyServerMasterStore(cloudStore);
-      updateSyncStatusUI('☁️ Google Firebase Realtime Activo', true);
+      updateSyncStatusUI('🖥️ SQL Server Oficina Activo', true);
     } else {
-      updateSyncStatusUI('⚡ Red Local / Servidor', false);
+      updateSyncStatusUI('⚡ Modo Local / Esperando Servidor', false);
     }
   } catch (err) {
-    console.warn('[Cloud Sync] Error al sincronizar con la nube:', err);
+    console.warn('[Cloud Sync] Error al sincronizar con el servidor:', err);
   } finally {
     isSyncingWithCloud = false;
   }
