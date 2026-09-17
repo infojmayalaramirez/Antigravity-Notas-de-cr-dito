@@ -112,13 +112,22 @@ async function ensureDatabaseSchema() {
             END
         `);
 
-        // 3. Sembrar sucursal S01 inicial si no existe
+        // 3. Sembrar y actualizar sucursales maestras (S01, S02, S03)
         await pool.request().query(`
             IF NOT EXISTS (SELECT 1 FROM dbo.Sucursales WHERE id_sucursal = 'S01')
-            BEGIN
-                INSERT INTO dbo.Sucursales (id_sucursal, nombre, direccion, activa_financiera)
-                VALUES ('S01', 'SDO6-GDL', 'Guadalajara Centro', 1);
-            END
+                INSERT INTO dbo.Sucursales (id_sucursal, nombre, direccion, activa_financiera) VALUES ('S01', 'Tijuana Matriz', 'Av. España #1168, Col. Moderna', 1);
+            ELSE
+                UPDATE dbo.Sucursales SET nombre = 'Tijuana Matriz', direccion = 'Av. España #1168, Col. Moderna', activa_financiera = 1 WHERE id_sucursal = 'S01';
+
+            IF NOT EXISTS (SELECT 1 FROM dbo.Sucursales WHERE id_sucursal = 'S02')
+                INSERT INTO dbo.Sucursales (id_sucursal, nombre, direccion, activa_financiera) VALUES ('S02', 'Mexicali Centro', 'Blvd. Benito Juárez #450, Col. Jardines', 1);
+            ELSE
+                UPDATE dbo.Sucursales SET nombre = 'Mexicali Centro', direccion = 'Blvd. Benito Juárez #450, Col. Jardines', activa_financiera = 1 WHERE id_sucursal = 'S02';
+
+            IF NOT EXISTS (SELECT 1 FROM dbo.Sucursales WHERE id_sucursal = 'S03')
+                INSERT INTO dbo.Sucursales (id_sucursal, nombre, direccion, activa_financiera) VALUES ('S03', 'Ensenada Puerto', 'Av. Ruiz #120, Col. Centro', 0);
+            ELSE
+                UPDATE dbo.Sucursales SET nombre = 'Ensenada Puerto', direccion = 'Av. Ruiz #120, Col. Centro', activa_financiera = 0 WHERE id_sucursal = 'S03';
         `);
 
         // 4. Crear tablas de catálogos si no existen

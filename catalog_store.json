@@ -109,9 +109,23 @@
     {
       "id": "S01",
       "id_sucursal": "S01",
-      "nombre": "SDO6-GDL",
-      "direccion": "Av España 1168",
+      "nombre": "Tijuana Matriz",
+      "direccion": "Av. España #1168, Col. Moderna",
       "activaFinanciera": true
+    },
+    {
+      "id": "S02",
+      "id_sucursal": "S02",
+      "nombre": "Mexicali Centro",
+      "direccion": "Blvd. Benito Juárez #450, Col. Jardines",
+      "activaFinanciera": true
+    },
+    {
+      "id": "S03",
+      "id_sucursal": "S03",
+      "nombre": "Ensenada Puerto",
+      "direccion": "Av. Ruiz #120, Col. Centro",
+      "activaFinanciera": false
     }
   ],
   "notas": [],
