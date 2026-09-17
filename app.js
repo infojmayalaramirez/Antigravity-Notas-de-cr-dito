@@ -62,14 +62,13 @@ let notas = loadData('ca_notas', []);
 let faltantesPicking = loadData('ca_faltantes_picking', []);
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
-// --- SISTEMA DE SINCRONIZACIÓN MULTI-FUENTE UNIFICADO PARA TODAS LAS ENTIDADES ---
-const LOCAL_SERVER_IP = 'http://192.168.100.9:3000';
-const TUNNEL_API_BASE = 'https://casaayala-notas-db.loca.lt';
+// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE 24/7 (NETLIFY CLOUD API + GOOGLE FIREBASE) ---
+const CLOUD_SYNC_ENDPOINT = '/.netlify/functions/sync';
 let isSyncingWithCloud = false;
 let cloudPushTimer = null;
 let isMergingFromCloud = false;
 
-// Inicialización de Google Cloud Firebase (como respaldo)
+// Inicialización de Google Cloud Firebase (como respaldo secundario)
 let googleCloudDb = null;
 if (typeof firebase !== 'undefined') {
   try {
@@ -85,7 +84,7 @@ if (typeof firebase !== 'undefined') {
 function updateSyncStatusUI(statusText, isSuccess = true) {
   const el = document.getElementById('cloud-sync-status-indicator');
   if (el) {
-    el.innerHTML = `<i class="fa-solid fa-server"></i> ${statusText}`;
+    el.innerHTML = `<i class="fa-solid fa-cloud"></i> ${statusText}`;
     el.style.color = isSuccess ? '#ffffff' : '#fde047';
   }
 }
@@ -97,7 +96,7 @@ function triggerCloudPushDebounced() {
   }, 400);
 }
 
-// Publica el almacén unificado completo (Todas las entidades) a Servidor Local + Nube
+// Publica el almacén unificado completo (Todas las 9 entidades) a la Nube 24/7
 async function pushToCloudStorage() {
   const payload = {
     clientes: clientes || [],
@@ -114,9 +113,9 @@ async function pushToCloudStorage() {
 
   let pushSuccess = false;
 
-  // 1. Envío a Servidor Local de Oficina (Red Wi-Fi Local)
+  // 1. Envío a Netlify Serverless Cloud API 24/7
   try {
-    const res = await fetch(`${LOCAL_SERVER_IP}/api/catalogos/sync-all`, {
+    const res = await fetch(CLOUD_SYNC_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -124,32 +123,7 @@ async function pushToCloudStorage() {
     if (res.ok) pushSuccess = true;
   } catch (err) {}
 
-  // 2. Envío a Netlify Serverless Cloud Endpoint
-  try {
-    const res = await fetch('/.netlify/functions/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    if (res.ok) pushSuccess = true;
-  } catch (err) {}
-
-  // 3. Envío a Túnel HTTPS Remoto
-  try {
-    const res = await fetch(`${TUNNEL_API_BASE}/api/catalogos/sync-all`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'Bypass-Tunnel-Remainder': 'true',
-        'bypass-tunnel-reminder': 'true'
-      },
-      body: JSON.stringify(payload)
-    });
-    if (res.ok) pushSuccess = true;
-  } catch (err) {}
-
-  // 4. Envío a Google Cloud Firebase
+  // 2. Envío a Google Cloud Firebase
   if (googleCloudDb) {
     try {
       googleCloudDb.ref('store').set(payload);
@@ -158,58 +132,28 @@ async function pushToCloudStorage() {
   }
 
   if (pushSuccess) {
-    updateSyncStatusUI('🖥️ Servidor Red Local / Nube Activo', true);
+    updateSyncStatusUI('☁️ Nube Administrada 24/7 Activa', true);
   } else {
-    updateSyncStatusUI('⚡ Modo Local / Esperando Servidor', false);
+    updateSyncStatusUI('⚡ Modo Local / Esperando Nube', false);
   }
 }
 
-// Lee el almacén unificado desde la mejor fuente disponible (Servidor Local Wi-Fi -> Netlify -> Túnel -> Firebase)
+// Lee el almacén unificado desde la Nube 24/7 (Netlify Serverless -> Google Firebase)
 async function syncWithCloudStorage() {
   if (isSyncingWithCloud) return;
   isSyncingWithCloud = true;
   try {
     let cloudStore = null;
 
-    // 1. Servidor Local Red Wi-Fi (Ultra rápido < 10ms)
+    // 1. Netlify Serverless Cloud Endpoint
     try {
-      const res = await fetch(`${LOCAL_SERVER_IP}/api/catalogos/all`, { cache: 'no-store' });
+      const res = await fetch(CLOUD_SYNC_ENDPOINT, { cache: 'no-store' });
       if (res.ok) {
         cloudStore = await res.json();
       }
     } catch (e) {}
 
-    // 2. Netlify Cloud Endpoint
-    if (!cloudStore) {
-      try {
-        const res = await fetch('/.netlify/functions/sync', { cache: 'no-store' });
-        if (res.ok) {
-          cloudStore = await res.json();
-        }
-      } catch (e) {}
-    }
-
-    // 3. Túnel Remoto HTTPS
-    if (!cloudStore) {
-      try {
-        const res = await fetch(`${TUNNEL_API_BASE}/api/catalogos/all`, {
-          headers: {
-            'Accept': 'application/json',
-            'Bypass-Tunnel-Remainder': 'true',
-            'bypass-tunnel-reminder': 'true'
-          },
-          cache: 'no-store'
-        });
-        if (res.ok) {
-          const contentType = res.headers.get('content-type') || '';
-          if (contentType.includes('application/json')) {
-            cloudStore = await res.json();
-          }
-        }
-      } catch (e) {}
-    }
-
-    // 4. Google Cloud Firebase
+    // 2. Respaldo en Google Cloud Firebase
     if (!cloudStore && googleCloudDb) {
       try {
         const snapshot = await googleCloudDb.ref('store').once('value');
@@ -221,12 +165,12 @@ async function syncWithCloudStorage() {
 
     if (cloudStore && typeof cloudStore === 'object') {
       applyServerMasterStore(cloudStore);
-      updateSyncStatusUI('🖥️ Servidor Red Local / Nube Activo', true);
+      updateSyncStatusUI('☁️ Nube Administrada 24/7 Activa', true);
     } else {
-      updateSyncStatusUI('⚡ Modo Local / Esperando Servidor', false);
+      updateSyncStatusUI('⚡ Modo Local / Esperando Nube', false);
     }
   } catch (err) {
-    console.warn('[Cloud Sync] Error al sincronizar:', err);
+    console.warn('[Cloud Sync] Error al sincronizar con la nube:', err);
   } finally {
     isSyncingWithCloud = false;
   }
@@ -303,10 +247,15 @@ function applyServerMasterStore(store) {
   saveData('ca_usuarios', usuarios);
 
   // Garantizar SIEMPRE estrictamente las 3 sucursales maestras
-  sucursales = DEFAULT_SUCURSALES_MAESTRAS;
+  if (Array.isArray(store.sucursales) && store.sucursales.length > 0) {
+    sucursales = safeMergeArrays(DEFAULT_SUCURSALES_MAESTRAS, store.sucursales);
+  } else {
+    sucursales = DEFAULT_SUCURSALES_MAESTRAS;
+  }
   saveData('ca_sucursales', sucursales);
 
-  if (changed) {
+  if (changed || true) {
+    if (typeof populateLoginUserSelect === 'function') populateLoginUserSelect();
     if (typeof refreshAllModuleDropdowns === 'function') refreshAllModuleDropdowns();
     if (typeof renderCatalogosTables === 'function') renderCatalogosTables();
     if (typeof renderNotasFisicasList === 'function') renderNotasFisicasList();
@@ -454,7 +403,7 @@ window.importarDatosJSON = function(event) {
 
 // Sincronización inicial y temporizador automático cada 3 segundos (y al enfocar pantalla o cambiar pestaña)
 fetchAPIData();
-setInterval(fetchAPIData, 60000);
+setInterval(syncWithCloudStorage, 10000);
 window.addEventListener('focus', () => { fetchAPIData(); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') fetchAPIData(); });
 
