@@ -88,11 +88,44 @@ let notas = loadData('ca_notas', []);
 let faltantesPicking = loadData('ca_faltantes_picking', []);
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
-// --- SISTEMA DE SINCRONIZACIÓN EN LA NUBE 24/7 (NETLIFY CLOUD API + GOOGLE FIREBASE) ---
-const CLOUD_SYNC_ENDPOINT = '/.netlify/functions/sync';
+// --- SINCRONIZACIÓN DIRECTA CON SQL SERVER VÍA CLOUDFLARE TUNNEL ---
+// El túnel de Cloudflare expone el servidor Node.js local (SQL Server Express) al mundo.
+// Esta URL es el puente entre cualquier celular/computadora y la base de datos real.
+const SQL_TUNNEL_BASE = 'https://progress-donated-possibly-bernard.trycloudflare.com';
+const CLOUD_SYNC_ENDPOINT = '/.netlify/functions/sync'; // mantener como respaldo
 let isSyncingWithCloud = false;
 let cloudPushTimer = null;
 let isMergingFromCloud = false;
+
+// Función principal: obtiene TODOS los datos reales del SQL Server via túnel
+async function fetchFromSQLServer() {
+  try {
+    const res = await fetch(`${SQL_TUNNEL_BASE}/api/catalogos/all`, {
+      cache: 'no-store',
+      headers: { 'Accept': 'application/json' }
+    });
+    if (!res.ok) return null;
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) return null;
+    const data = await res.json();
+    return data;
+  } catch (e) {
+    console.warn('[SQL Tunnel] No accesible:', e.message);
+    return null;
+  }
+}
+
+// Función para escribir al SQL Server via túnel (guardar cambios)
+async function pushToSQLServer(entity, item) {
+  try {
+    const endpoint = `${SQL_TUNNEL_BASE}/api/${entity}`;
+    await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(item)
+    });
+  } catch (e) {}
+}
 
 // Inicialización de Google Cloud Firebase (como respaldo secundario)
 let googleCloudDb = null;
@@ -302,86 +335,71 @@ setInterval(() => {
   }
 }, 5000);
 
-// Función asíncrona para sincronizar datos reales desde la base de datos SQL Server / Nube
+// Función principal de sincronización: lee directamente de SQL Server via túnel Cloudflare
 async function fetchAPIData() {
-  // 1. Sincronización en la Nube Global (para Netlify, celulares 4G/5G y multi-dispositivo)
-  await syncWithCloudStorage();
-
-  try {
-    const sucursalesRes = await fetch('/api/sucursales');
-    const contentType = sucursalesRes.headers.get('content-type') || '';
-    if (sucursalesRes.ok && contentType.includes('application/json')) {
-      const dataSuc = await sucursalesRes.json();
-      if (Array.isArray(dataSuc) && dataSuc.length > 0) {
-        sucursales = dataSuc;
-        saveData('ca_sucursales', sucursales);
-      }
+  // 1. PRIORIDAD MÁS ALTA: SQL Server real via túnel Cloudflare
+  const sqlData = await fetchFromSQLServer();
+  if (sqlData) {
+    // Recibimos datos reales del SQL Server local
+    if (Array.isArray(sqlData.usuarios) && sqlData.usuarios.length > 0) {
+      usuarios = sqlData.usuarios.map(u => ({ ...u, id: u.id || u.id_usuario }));
+      saveData('ca_usuarios', usuarios);
     }
-  } catch (err) {}
-
-  try {
-    const notasRes = await fetch('/api/notas');
-    const contentType = notasRes.headers.get('content-type') || '';
-    if (notasRes.ok && contentType.includes('application/json')) {
-      const dataNotas = await notasRes.json();
-      if (Array.isArray(dataNotas)) {
-        notas = dataNotas;
-        saveData('ca_notas', notas);
-      }
+    if (Array.isArray(sqlData.sucursales) && sqlData.sucursales.length > 0) {
+      sucursales = sqlData.sucursales;
+      saveData('ca_sucursales', sucursales);
     }
-  } catch (err) {}
-
-  try {
-    const usuariosRes = await fetch('/api/usuarios');
-    const contentType = usuariosRes.headers.get('content-type') || '';
-    if (usuariosRes.ok && contentType.includes('application/json')) {
-      const dataUsuarios = await usuariosRes.json();
-      if (Array.isArray(dataUsuarios) && dataUsuarios.length > 0) {
-        usuarios = dataUsuarios;
-        saveData('ca_usuarios', usuarios);
-      }
+    if (Array.isArray(sqlData.clientes)) {
+      clientes = ensureAllSqlClientsExist(sqlData.clientes);
+      saveData('ca_clientes', clientes);
     }
-  } catch (err) {}
+    if (Array.isArray(sqlData.operadores)) {
+      operadores = sqlData.operadores;
+      saveData('ca_operadores', operadores);
+    }
+    if (Array.isArray(sqlData.vendedores)) {
+      vendedores = sqlData.vendedores;
+      saveData('ca_vendedores', vendedores);
+    }
+    if (Array.isArray(sqlData.proveedores)) {
+      proveedores = sqlData.proveedores;
+      saveData('ca_proveedores', proveedores);
+    }
+    if (Array.isArray(sqlData.presupuestos)) {
+      presupuestos = sqlData.presupuestos;
+      saveData('ca_presupuestos', presupuestos);
+    }
+    if (Array.isArray(sqlData.notas)) {
+      notas = sqlData.notas;
+      saveData('ca_notas', notas);
+    }
+    if (Array.isArray(sqlData.faltantes)) {
+      faltantesPicking = sqlData.faltantes;
+      saveData('ca_faltantes_picking', faltantesPicking);
+    }
+    updateSyncStatusUI('🟢 SQL Server Conectado', true);
+  } else {
+    // 2. RESPALDO: Función Netlify o memoria local si el túnel no responde
+    await syncWithCloudStorage();
+    updateSyncStatusUI('🟡 Modo Local (SQL sin conexión)', false);
+  }
 
+  // Garantizar usuarios y clientes base siempre visibles
   if (!usuarios || usuarios.length === 0) {
-    usuarios = (typeof INITIAL_USUARIOS !== 'undefined' && INITIAL_USUARIOS.length > 0) ? INITIAL_USUARIOS : DEFAULT_USUARIOS_FALLBACK;
+    usuarios = DEFAULT_USUARIOS_FALLBACK;
     saveData('ca_usuarios', usuarios);
   }
+  usuarios = ensureAllSqlUsersExist(usuarios);
 
+  // Actualizar todos los módulos de la UI
   populateLoginUserSelect();
-
-  const userVends = usuarios.filter(u => !u.bloqueado && u.rol === 'Vendedor');
-  if (userVends.length > 0) {
-    vendedores = userVends.map(u => ({
-      id: u.id || u.id_usuario,
-      nombre: u.nombre,
-      email: u.email,
-      telefono: u.telefono || '',
-      sucursalId: u.sucursalId || u.id_sucursal || 'S01'
-    }));
-  }
-
-  try {
-    const catRes = await fetch('/api/catalogos/all');
-    const contentType = catRes.headers.get('content-type') || '';
-    if (catRes.ok && contentType.includes('application/json')) {
-      const store = await catRes.json();
-      if (store) {
-        mergeAllDataFromStore(store);
-        fetch('/api/catalogos/sync-all', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ clientes, operadores, vendedores, proveedores, presupuestos, notas, faltantesPicking })
-        }).catch(e => {});
-      }
-    }
-  } catch (err) {}
-
   if (typeof refreshAllModuleDropdowns === 'function') refreshAllModuleDropdowns();
   if (typeof renderNotasFisicasList === 'function') renderNotasFisicasList();
   if (typeof renderNotasFinancierasList === 'function') renderNotasFinancierasList();
   if (typeof renderUsuariosTable === 'function') renderUsuariosTable();
   if (typeof renderCatalogosTables === 'function') renderCatalogosTables();
+  if (typeof renderSucursalesTable === 'function') renderSucursalesTable();
+  if (typeof updateDashboard === 'function') updateDashboard();
 }
 
 // Funciones globales para respaldo manual JSON (Exportar e Importar)
@@ -2282,6 +2300,8 @@ function submitPhysicalNote(isDraft) {
   notas.push(nuevaNota);
   saveData('ca_notas', notas);
   pushToCloudStorage();
+  // Guardar nota en SQL Server via túnel Cloudflare (fuente real)
+  pushToSQLServer('notas', nuevaNota);
   
   alert(isDraft ? "Borrador guardado." : "Nota de crédito física emitida.");
   
@@ -3705,6 +3725,9 @@ function setupCatalogosView() {
     clientes.push(newClient);
     saveData('ca_clientes', clientes);
     pushToCloudStorage();
+
+    // Guardar en SQL Server via túnel Cloudflare (fuente real)
+    pushToSQLServer('clientes', newClient);
 
     try {
       await fetch('/api/clientes', {
