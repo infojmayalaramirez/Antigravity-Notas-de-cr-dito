@@ -1,5 +1,13 @@
 {
-  "clientes": [],
+  "clientes": [
+    { "id": "2543", "codigo": "2543", "nombre": "Rosalina Varela Rivera", "derechoDescuento": true },
+    { "id": "2471", "codigo": "2471", "nombre": "Alejandro Ortiz", "derechoDescuento": true },
+    { "id": "001", "codigo": "001", "nombre": "Pepe Ayala", "derechoDescuento": true },
+    { "id": "2465", "codigo": "2465", "nombre": "Plasticos el Carrousel", "derechoDescuento": true },
+    { "id": "2500", "codigo": "2500", "nombre": "Pedro Perez González", "derechoDescuento": true },
+    { "id": "PRU20260917_1", "codigo": "PRU20260917", "nombre": "Cliente P", "derechoDescuento": false },
+    { "id": "PRU20260917_2", "codigo": "PRU20260917", "nombre": "Cliente Prueba Remota SQL", "derechoDescuento": false }
+  ],
   "operadores": [],
   "vendedores": [],
   "proveedores": [],

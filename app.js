@@ -119,7 +119,9 @@ async function pushToCloudStorage() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Bypass-Tunnel-Remainder': 'true'
+        'Accept': 'application/json',
+        'Bypass-Tunnel-Remainder': 'true',
+        'bypass-tunnel-reminder': 'true'
       },
       body: JSON.stringify(payload)
     });
@@ -155,11 +157,18 @@ async function syncWithCloudStorage() {
     // 1. Consulta al Servidor SQL Server Remoto de Oficina
     try {
       const res = await fetch(`${TUNNEL_API_BASE}/api/catalogos/all`, {
-        headers: { 'Bypass-Tunnel-Remainder': 'true' },
+        headers: {
+          'Accept': 'application/json',
+          'Bypass-Tunnel-Remainder': 'true',
+          'bypass-tunnel-reminder': 'true'
+        },
         cache: 'no-store'
       });
       if (res.ok) {
-        cloudStore = await res.json();
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          cloudStore = await res.json();
+        }
       }
     } catch (e) {
       console.warn('[SQL Server Remote] Error de conexión:', e);
