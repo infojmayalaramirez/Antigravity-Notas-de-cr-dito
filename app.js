@@ -26,10 +26,19 @@ const DEFAULT_USUARIOS_FALLBACK = [
   { id: "U48921", id_usuario: "U48921", nombre: "Araceli Escobar", email: "lafer7522@gmail.com", rol: "Vendedor", sucursalId: "S01", id_sucursal: "S01", nip: "4823", bloqueado: false, adminTipo: "Ninguno", telefono: "6647654321" }
 ];
 
+const DEFAULT_CLIENTES_FALLBACK = [
+  { id: "2543", codigo: "2543", nombre: "Rosalina Varela Rivera", derechoDescuento: true },
+  { id: "2471", codigo: "2471", nombre: "Alejandro Ortiz", derechoDescuento: true },
+  { id: "001", codigo: "001", nombre: "Pepe Ayala", derechoDescuento: true },
+  { id: "2465", codigo: "2465", nombre: "Plasticos el Carrousel", derechoDescuento: true },
+  { id: "2500", codigo: "2500", nombre: "Pedro Perez González", derechoDescuento: true },
+  { id: "PRU20260917_1", codigo: "PRU20260917", nombre: "Cliente P", derechoDescuento: false },
+  { id: "PRU20260917_2", codigo: "PRU20260917", nombre: "Cliente Prueba Remota SQL", derechoDescuento: false }
+];
+
 function ensureAllSqlUsersExist(localUsers) {
-  const defaults = (typeof INITIAL_USUARIOS !== 'undefined' && INITIAL_USUARIOS.length > 0) ? INITIAL_USUARIOS : DEFAULT_USUARIOS_FALLBACK;
   const userMap = new Map();
-  defaults.forEach(u => {
+  DEFAULT_USUARIOS_FALLBACK.forEach(u => {
     if (u && (u.id || u.id_usuario)) userMap.set(String(u.id || u.id_usuario), u);
   });
   (localUsers || []).forEach(u => {
@@ -39,6 +48,22 @@ function ensureAllSqlUsersExist(localUsers) {
     }
   });
   return Array.from(userMap.values());
+}
+
+function ensureAllSqlClientsExist(localClients) {
+  const clientMap = new Map();
+  DEFAULT_CLIENTES_FALLBACK.forEach(c => {
+    if (c && (c.id || c.codigo || c.nombre)) {
+      clientMap.set(String(c.id || c.codigo || c.nombre), c);
+    }
+  });
+  (localClients || []).forEach(c => {
+    if (c && (c.id || c.codigo || c.nombre)) {
+      const key = String(c.id || c.codigo || c.nombre);
+      clientMap.set(key, { ...clientMap.get(key), ...c });
+    }
+  });
+  return Array.from(clientMap.values());
 }
 
 const DEFAULT_SUCURSALES_MAESTRAS = [
@@ -53,7 +78,8 @@ saveData('ca_usuarios', usuarios);
 
 let sucursales = DEFAULT_SUCURSALES_MAESTRAS;
 saveData('ca_sucursales', sucursales);
-let clientes = loadData('ca_clientes', (typeof INITIAL_CLIENTES !== 'undefined' && INITIAL_CLIENTES.length > 0) ? INITIAL_CLIENTES : []);
+let clientes = ensureAllSqlClientsExist(loadData('ca_clientes', DEFAULT_CLIENTES_FALLBACK));
+saveData('ca_clientes', clientes);
 let operadores = loadData('ca_operadores', (typeof INITIAL_OPERADORES !== 'undefined' && INITIAL_OPERADORES.length > 0) ? INITIAL_OPERADORES : []);
 let vendedores = loadData('ca_vendedores', (typeof INITIAL_VENDEDORES !== 'undefined' && INITIAL_VENDEDORES.length > 0) ? INITIAL_VENDEDORES : []);
 let presupuestos = loadData('ca_presupuestos', (typeof INITIAL_PRESUPUESTOS !== 'undefined' && INITIAL_PRESUPUESTOS.length > 0) ? INITIAL_PRESUPUESTOS : []);
@@ -201,12 +227,12 @@ function applyServerMasterStore(store) {
   let changed = false;
 
   if (Array.isArray(store.clientes)) {
-    const merged = safeMergeArrays(clientes, store.clientes);
-    if (merged.length > 0 || clientes.length > 0) {
-      clientes = merged;
-      saveData('ca_clientes', clientes);
-      changed = true;
-    }
+    clientes = ensureAllSqlClientsExist(safeMergeArrays(clientes, store.clientes));
+    saveData('ca_clientes', clientes);
+    changed = true;
+  } else {
+    clientes = ensureAllSqlClientsExist(clientes);
+    saveData('ca_clientes', clientes);
   }
   if (Array.isArray(store.notas)) {
     const merged = safeMergeArrays(notas, store.notas);

@@ -49,6 +49,19 @@ let globalStore = {
   updatedAt: new Date().toISOString()
 };
 
+const fs = require('fs');
+const path = require('path');
+
+function getDiskStore() {
+  try {
+    const diskPath = path.join(__dirname, '../../catalog_store.json');
+    if (fs.existsSync(diskPath)) {
+      return JSON.parse(fs.readFileSync(diskPath, 'utf8'));
+    }
+  } catch (e) {}
+  return null;
+}
+
 exports.handler = async (event, context) => {
   const headers = {
     'Access-Control-Allow-Origin': '*',
@@ -56,6 +69,19 @@ exports.handler = async (event, context) => {
     'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
     'Content-Type': 'application/json'
   };
+
+  const diskData = getDiskStore();
+  if (diskData) {
+    if (Array.isArray(diskData.clientes)) globalStore.clientes = safeMergeArrays(globalStore.clientes, diskData.clientes);
+    if (Array.isArray(diskData.usuarios)) globalStore.usuarios = safeMergeArrays(globalStore.usuarios, diskData.usuarios);
+    if (Array.isArray(diskData.sucursales)) globalStore.sucursales = safeMergeArrays(globalStore.sucursales, diskData.sucursales);
+    if (Array.isArray(diskData.notas)) globalStore.notas = safeMergeArrays(globalStore.notas, diskData.notas);
+    if (Array.isArray(diskData.operadores)) globalStore.operadores = safeMergeArrays(globalStore.operadores, diskData.operadores);
+    if (Array.isArray(diskData.vendedores)) globalStore.vendedores = safeMergeArrays(globalStore.vendedores, diskData.vendedores);
+    if (Array.isArray(diskData.proveedores)) globalStore.proveedores = safeMergeArrays(globalStore.proveedores, diskData.proveedores);
+    if (Array.isArray(diskData.presupuestos)) globalStore.presupuestos = safeMergeArrays(globalStore.presupuestos, diskData.presupuestos);
+    if (Array.isArray(diskData.faltantes)) globalStore.faltantes = safeMergeArrays(globalStore.faltantes, diskData.faltantes);
+  }
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers, body: '' };
