@@ -91,7 +91,7 @@ let productosMasterPicking = loadData('ca_productos_picking_master', []);
 // --- SINCRONIZACIÓN DIRECTA CON SQL SERVER VÍA CLOUDFLARE TUNNEL ---
 // El túnel de Cloudflare expone el servidor Node.js local (SQL Server Express) al mundo.
 // Esta URL es el puente entre cualquier celular/computadora y la base de datos real.
-const SQL_TUNNEL_BASE = 'https://progress-donated-possibly-bernard.trycloudflare.com';
+const SQL_TUNNEL_BASE = 'https://taxi-rom-mitsubishi-belfast.trycloudflare.com';
 const CLOUD_SYNC_ENDPOINT = '/.netlify/functions/sync'; // mantener como respaldo
 let isSyncingWithCloud = false;
 let cloudPushTimer = null;
@@ -328,12 +328,15 @@ function applyServerMasterStore(store) {
   isMergingFromCloud = false;
 }
 
-// Polling continuo automático cada 5 segundos para sincronización en tiempo real
-setInterval(() => {
-  if (!isSyncingWithCloud) {
-    syncWithCloudStorage();
+// Polling continuo: lee y escribe SIEMPRE contra SQL Server real (via túnel Cloudflare)
+let _syncRunning = false;
+setInterval(async () => {
+  if (!_syncRunning) {
+    _syncRunning = true;
+    await fetchAPIData();
+    _syncRunning = false;
   }
-}, 5000);
+}, 8000);
 
 // Función principal de sincronización: lee directamente de SQL Server via túnel Cloudflare
 async function fetchAPIData() {
@@ -445,9 +448,9 @@ window.importarDatosJSON = function(event) {
   reader.readAsText(file);
 };
 
-// Sincronización inicial y temporizador automático cada 3 segundos (y al enfocar pantalla o cambiar pestaña)
+// Sincronización inicial y temporizador automático
 fetchAPIData();
-setInterval(syncWithCloudStorage, 10000);
+setInterval(fetchAPIData, 15000); // Polling de respaldo cada 15 seg
 window.addEventListener('focus', () => { fetchAPIData(); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') fetchAPIData(); });
 
@@ -2785,6 +2788,7 @@ function submitFinancialNote(isDraft) {
   notas.push(nuevaNota);
   saveData('ca_notas', notas);
   pushToCloudStorage();
+  pushToSQLServer('notas', nuevaNota); // guardar en SQL Server real
 
   if (isDraft) {
     alert("Borrador guardado.");
@@ -3281,9 +3285,12 @@ function setupSucursalesView() {
     const nuevoId = "S" + String(sucursales.length + 1).padStart(2, '0');
     const payload = { id: nuevoId, nombre, direccion, activaFinanciera };
 
+    // Siempre guardar en SQL Server via tunel (fuente real)
+    pushToSQLServer('sucursales', payload);
+
     let apiWorked = false;
     try {
-      const res = await fetch('/api/sucursales', {
+      const res = await fetch(`${SQL_TUNNEL_BASE}/api/sucursales`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -3291,18 +3298,18 @@ function setupSucursalesView() {
       const ct = res.headers.get('content-type') || '';
       if (res.ok && ct.includes('application/json')) {
         apiWorked = true;
-        alert("Sucursal registrada exitosamente en SQL Server.");
+        alert("Sucursal registrada en SQL Server.");
         document.getElementById('form-sucursal').reset();
         await fetchAPIData();
       }
     } catch (err) {
-      console.warn("API de sucursales no disponible:", err);
+      console.warn("Tunel SQL no disponible, guardando local:", err);
     }
 
     if (!apiWorked) {
       sucursales.push(payload);
       saveData('ca_sucursales', sucursales);
-      alert("Sucursal registrada exitosamente (Almacenamiento Local).");
+      alert("Sucursal registrada (local). Se sincronizará cuando el servidor esté disponible.");
       document.getElementById('form-sucursal').reset();
       renderSucursalesTable();
       refreshAllModuleDropdowns();
@@ -3752,6 +3759,7 @@ function setupCatalogosView() {
     operadores.push(newOperador);
     saveData('ca_operadores', operadores);
     pushToCloudStorage();
+    pushToSQLServer('operadores', newOperador); // guardar en SQL Server real
 
     try {
       await fetch('/api/operadores', {
@@ -3776,6 +3784,7 @@ function setupCatalogosView() {
     vendedores.push(newVend);
     saveData('ca_vendedores', vendedores);
     pushToCloudStorage();
+    pushToSQLServer('vendedores', newVend); // guardar en SQL Server real
 
     try {
       await fetch('/api/vendedores', {
