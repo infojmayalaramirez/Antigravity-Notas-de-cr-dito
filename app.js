@@ -350,6 +350,8 @@ async function fetchAPIData() {
     }
     if (Array.isArray(sqlData.sucursales) && sqlData.sucursales.length > 0) {
       sucursales = sqlData.sucursales;
+      // Forzar limpieza de cualquier dato viejo de sucursales en localStorage
+      localStorage.removeItem('ca_sucursales');
       saveData('ca_sucursales', sucursales);
     }
     if (Array.isArray(sqlData.clientes)) {
