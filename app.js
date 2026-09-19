@@ -73,19 +73,17 @@ const DEFAULT_SUCURSALES_MAESTRAS = [
 ];
 
 // Colección global de usuarios en memoria (asegurando siempre la disponibilidad de las cuentas espejos de SQL Server)
-let usuarios = ensureAllSqlUsersExist(loadData('ca_usuarios', DEFAULT_USUARIOS_FALLBACK));
-saveData('ca_usuarios', usuarios);
-
-let sucursales = DEFAULT_SUCURSALES_MAESTRAS;
-saveData('ca_sucursales', sucursales);
-let clientes = ensureAllSqlClientsExist(loadData('ca_clientes', DEFAULT_CLIENTES_FALLBACK));
-saveData('ca_clientes', clientes);
-let operadores = loadData('ca_operadores', (typeof INITIAL_OPERADORES !== 'undefined' && INITIAL_OPERADORES.length > 0) ? INITIAL_OPERADORES : []);
-let vendedores = loadData('ca_vendedores', (typeof INITIAL_VENDEDORES !== 'undefined' && INITIAL_VENDEDORES.length > 0) ? INITIAL_VENDEDORES : []);
-let presupuestos = loadData('ca_presupuestos', (typeof INITIAL_PRESUPUESTOS !== 'undefined' && INITIAL_PRESUPUESTOS.length > 0) ? INITIAL_PRESUPUESTOS : []);
-let proveedores = loadData('ca_proveedores', (typeof INITIAL_PROVEEDORES !== 'undefined' && INITIAL_PROVEEDORES.length > 0) ? INITIAL_PROVEEDORES : []);
-let notas = loadData('ca_notas', []);
-let faltantesPicking = loadData('ca_faltantes_picking', []);
+// FRONTEND STATELESS: arrays vacíos al arranque. SQL Server es la única fuente de verdad.
+// Los datos se obtienen en el primer fetchAPIData() que se ejecuta inmediatamente al cargar.
+let usuarios = [];
+let sucursales = [];
+let clientes = [];
+let operadores = [];
+let vendedores = [];
+let presupuestos = [];
+let proveedores = [];
+let notas = [];
+let faltantesPicking = [];
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
 // --- SINCRONIZACIÓN DIRECTA CON SQL SERVER VÍA CLOUDFLARE TUNNEL ---
@@ -330,73 +328,59 @@ function applyServerMasterStore(store) {
 
 // Polling continuo: lee y escribe SIEMPRE contra SQL Server real (via túnel Cloudflare)
 let _syncRunning = false;
+// Polling cada 5 segundos: la Computadora A ve automáticamente lo que hizo la Computadora B
 setInterval(async () => {
   if (!_syncRunning) {
     _syncRunning = true;
     await fetchAPIData();
     _syncRunning = false;
   }
-}, 8000);
+}, 5000);
 
-// Función principal de sincronización: lee directamente de SQL Server via túnel Cloudflare
+// Función principal — ÚNICA FUENTE DE VERDAD: SQL Server via túnel Cloudflare
+// Cero localStorage como fuente de datos. El backend manda la ley.
 async function fetchAPIData() {
-  // 1. PRIORIDAD MÁS ALTA: SQL Server real via túnel Cloudflare
   const sqlData = await fetchFromSQLServer();
   if (sqlData) {
-    // Recibimos datos reales del SQL Server local
+    // --- SINCRONIZACIÓN TOTAL: reemplazar arrays locales con lo que dice SQL Server ---
     if (Array.isArray(sqlData.usuarios) && sqlData.usuarios.length > 0) {
       usuarios = sqlData.usuarios.map(u => ({ ...u, id: u.id || u.id_usuario }));
-      saveData('ca_usuarios', usuarios);
     }
     if (Array.isArray(sqlData.sucursales) && sqlData.sucursales.length > 0) {
       sucursales = sqlData.sucursales;
-      // Forzar limpieza de cualquier dato viejo de sucursales en localStorage
-      localStorage.removeItem('ca_sucursales');
-      saveData('ca_sucursales', sucursales);
     }
     if (Array.isArray(sqlData.clientes)) {
-      clientes = ensureAllSqlClientsExist(sqlData.clientes);
-      saveData('ca_clientes', clientes);
+      clientes = sqlData.clientes;
     }
     if (Array.isArray(sqlData.operadores)) {
       operadores = sqlData.operadores;
-      saveData('ca_operadores', operadores);
     }
     if (Array.isArray(sqlData.vendedores)) {
       vendedores = sqlData.vendedores;
-      saveData('ca_vendedores', vendedores);
     }
     if (Array.isArray(sqlData.proveedores)) {
       proveedores = sqlData.proveedores;
-      saveData('ca_proveedores', proveedores);
     }
     if (Array.isArray(sqlData.presupuestos)) {
       presupuestos = sqlData.presupuestos;
-      saveData('ca_presupuestos', presupuestos);
     }
     if (Array.isArray(sqlData.notas)) {
       notas = sqlData.notas;
-      saveData('ca_notas', notas);
     }
     if (Array.isArray(sqlData.faltantes)) {
       faltantesPicking = sqlData.faltantes;
-      saveData('ca_faltantes_picking', faltantesPicking);
+    } else if (Array.isArray(sqlData.faltantesPicking)) {
+      faltantesPicking = sqlData.faltantesPicking;
     }
     updateSyncStatusUI('🟢 SQL Server Conectado', true);
   } else {
-    // 2. RESPALDO: Función Netlify o memoria local si el túnel no responde
-    await syncWithCloudStorage();
-    updateSyncStatusUI('🟡 Modo Local (SQL sin conexión)', false);
+    // Sin conexión al túnel: mostrar advertencia pero NO cargar datos de localStorage
+    updateSyncStatusUI('🔴 Sin conexión a SQL Server', false);
+    console.warn('[fetchAPIData] Túnel no disponible. Los datos en pantalla pueden estar desactualizados.');
+    return; // No repintar con datos viejos
   }
 
-  // Garantizar usuarios y clientes base siempre visibles
-  if (!usuarios || usuarios.length === 0) {
-    usuarios = DEFAULT_USUARIOS_FALLBACK;
-    saveData('ca_usuarios', usuarios);
-  }
-  usuarios = ensureAllSqlUsersExist(usuarios);
-
-  // Actualizar todos los módulos de la UI
+  // --- REPINTAR TODA LA UI con datos frescos del SQL Server ---
   populateLoginUserSelect();
   if (typeof refreshAllModuleDropdowns === 'function') refreshAllModuleDropdowns();
   if (typeof renderNotasFisicasList === 'function') renderNotasFisicasList();
@@ -404,6 +388,8 @@ async function fetchAPIData() {
   if (typeof renderUsuariosTable === 'function') renderUsuariosTable();
   if (typeof renderCatalogosTables === 'function') renderCatalogosTables();
   if (typeof renderSucursalesTable === 'function') renderSucursalesTable();
+  if (typeof renderPresupuestosTable === 'function') renderPresupuestosTable();
+  if (typeof renderFaltantesPickingTable === 'function') renderFaltantesPickingTable();
   if (typeof updateDashboard === 'function') updateDashboard();
 }
 
@@ -3711,7 +3697,7 @@ window.removeUsuario = async function(id) {
 // --- 8. VIEW: CATÁLOGOS GENERALES (CÓDIGO INTERNO) ---
 function setupCatalogosView() {
   const tabs = ['clientes', 'operadores', 'vendedores', 'proveedores'];
-  
+
   tabs.forEach(tab => {
     document.getElementById(`tab-cat-${tab}`).addEventListener('click', (e) => {
       tabs.forEach(t => {
@@ -3723,85 +3709,83 @@ function setupCatalogosView() {
     });
   });
 
+  // CLIENTES — POST directo a SQL Server, repintar con fetchAPIData()
   document.getElementById('form-cat-cliente').addEventListener('submit', async (e) => {
     e.preventDefault();
     const nombre = document.getElementById('cat-cli-nombre').value.trim();
     const codigoInterno = document.getElementById('cat-cli-rfc').value.trim();
     const tieneDerechoDescuento = document.getElementById('cat-cli-descto').checked;
-
-    const nuevoId = "C" + String(clientes.length + 1).padStart(2, '0');
-    const newClient = { id: nuevoId, nombre, codigoInterno, tieneDerechoDescuento, eliminado: false };
-    clientes.push(newClient);
-    saveData('ca_clientes', clientes);
-    pushToCloudStorage();
-
-    // Guardar en SQL Server via túnel Cloudflare (fuente real)
-    pushToSQLServer('clientes', newClient);
-
+    const nuevoId = 'C' + Date.now().toString().slice(-8);
+    const newClient = { id: nuevoId, nombre, codigoInterno, tieneDerechoDescuento };
     try {
-      await fetch('/api/clientes', {
+      const res = await fetch(`${SQL_TUNNEL_BASE}/api/clientes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newClient)
       });
-    } catch (err) {}
-    
-    alert("Cliente registrado.");
-    document.getElementById('form-cat-cliente').reset();
-    renderCatalogosTables();
+      if (res.ok) {
+        alert('Cliente registrado.');
+        document.getElementById('form-cat-cliente').reset();
+        await fetchAPIData();
+      } else {
+        alert('Error al guardar el cliente. Intente nuevamente.');
+      }
+    } catch (err) {
+      alert('Sin conexión al servidor SQL. Verifique el túnel Cloudflare.');
+    }
   });
 
+  // OPERADORES — POST directo a SQL Server, repintar con fetchAPIData()
   document.getElementById('form-cat-operador').addEventListener('submit', async (e) => {
     e.preventDefault();
     const nombre = document.getElementById('cat-ope-nombre').value.trim();
     const puesto = document.getElementById('cat-ope-puesto').value.trim();
-
-    const nuevoId = "O" + String(operadores.length + 1).padStart(2, '0');
-    const newOperador = { id: nuevoId, nombre, puesto, eliminado: false };
-    operadores.push(newOperador);
-    saveData('ca_operadores', operadores);
-    pushToCloudStorage();
-    pushToSQLServer('operadores', newOperador); // guardar en SQL Server real
-
+    const nuevoId = 'O' + Date.now().toString().slice(-8);
+    const newOperador = { id: nuevoId, nombre, puesto };
     try {
-      await fetch('/api/operadores', {
+      const res = await fetch(`${SQL_TUNNEL_BASE}/api/operadores`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newOperador)
       });
-    } catch (err) {}
-
-    alert("Operador registrado.");
-    document.getElementById('form-cat-operador').reset();
-    renderCatalogosTables();
+      if (res.ok) {
+        alert('Operador registrado.');
+        document.getElementById('form-cat-operador').reset();
+        await fetchAPIData();
+      } else {
+        alert('Error al guardar el operador.');
+      }
+    } catch (err) {
+      alert('Sin conexión al servidor SQL. Verifique el túnel Cloudflare.');
+    }
   });
 
+  // VENDEDORES — POST directo a SQL Server, repintar con fetchAPIData()
   document.getElementById('form-cat-vendedor').addEventListener('submit', async (e) => {
     e.preventDefault();
     const nombre = document.getElementById('cat-ven-nombre').value.trim();
     const sucursalId = document.getElementById('cat-ven-sucursal').value;
-
-    const nuevoId = "V" + String(vendedores.length + 1).padStart(2, '0');
-    const newVend = { id: nuevoId, nombre, sucursalId, userId: null, eliminado: false };
-    vendedores.push(newVend);
-    saveData('ca_vendedores', vendedores);
-    pushToCloudStorage();
-    pushToSQLServer('vendedores', newVend); // guardar en SQL Server real
-
+    const nuevoId = 'V' + Date.now().toString().slice(-8);
+    const newVend = { id: nuevoId, nombre, sucursalId, userId: null };
     try {
-      await fetch('/api/vendedores', {
+      const res = await fetch(`${SQL_TUNNEL_BASE}/api/vendedores`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newVend)
       });
-    } catch (err) {}
-
-    alert("Vendedor registrado.");
-    document.getElementById('form-cat-vendedor').reset();
-    renderCatalogosTables();
+      if (res.ok) {
+        alert('Vendedor registrado.');
+        document.getElementById('form-cat-vendedor').reset();
+        await fetchAPIData();
+      } else {
+        alert('Error al guardar el vendedor.');
+      }
+    } catch (err) {
+      alert('Sin conexión al servidor SQL. Verifique el túnel Cloudflare.');
+    }
   });
 
-  // Manejo de formulario de Proveedor
+  // PROVEEDORES — POST directo a SQL Server, repintar con fetchAPIData()
   document.getElementById('form-cat-proveedor').addEventListener('submit', async (e) => {
     e.preventDefault();
     const idInput = document.getElementById('cat-prov-id').value;
@@ -3812,48 +3796,35 @@ function setupCatalogosView() {
     const tipoPromo = document.getElementById('cat-prov-tipo-promo').value;
     const fechaInicio = document.getElementById('cat-prov-inicio').value;
     const fechaFin = document.getElementById('cat-prov-fin').value;
-
     const clientesCajon = [];
     document.querySelectorAll('.cat-prov-cli-cb:checked').forEach(cb => {
       clientesCajon.push(cb.value);
     });
-
-    let provObj = null;
-    if (idInput) {
-      const idx = proveedores.findIndex(p => p.id === idInput);
-      if (idx !== -1) {
-        proveedores[idx] = { ...proveedores[idx], nombre, desc1, desc2, desc3, clientesCajon, fechaInicio, fechaFin, tipoPromo };
-        provObj = proveedores[idx];
-        alert("Proveedor actualizado.");
+    const nuevoId = idInput || ('P' + Date.now().toString().slice(-8));
+    const provObj = { id: nuevoId, nombre, desc1, desc2, desc3, clientesCajon, fechaInicio, fechaFin, tipoPromo };
+    try {
+      const res = await fetch(`${SQL_TUNNEL_BASE}/api/proveedores`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(provObj)
+      });
+      if (res.ok) {
+        alert(idInput ? 'Proveedor actualizado.' : 'Proveedor registrado.');
+        resetProveedorForm();
+        await fetchAPIData();
+      } else {
+        alert('Error al guardar el proveedor.');
       }
-    } else {
-      const nuevoId = "P" + String(proveedores.length + 1).padStart(2, '0');
-      provObj = { id: nuevoId, nombre, desc1, desc2, desc3, clientesCajon, fechaInicio, fechaFin, tipoPromo, eliminado: false };
-      proveedores.push(provObj);
-      alert("Proveedor registrado.");
+    } catch (err) {
+      alert('Sin conexión al servidor SQL. Verifique el túnel Cloudflare.');
     }
-
-    saveData('ca_proveedores', proveedores);
-    pushToCloudStorage();
-
-    if (provObj) {
-      try {
-        await fetch('/api/proveedores', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(provObj)
-        });
-      } catch (err) {}
-    }
-
-    resetProveedorForm();
-    renderCatalogosTables();
   });
 
   document.getElementById('btn-cancel-edit-proveedor').addEventListener('click', () => {
     resetProveedorForm();
   });
 }
+
 
 function resetProveedorForm() {
   document.getElementById('form-cat-proveedor').reset();
@@ -3996,70 +3967,60 @@ function renderCatalogosTables() {
 
 window.removeCliente = async function(id) {
   if (currentUser.rol !== 'Administrador' && currentUser.rol !== 'Gerente') {
-    alert("Solo el Administrador o el Gerente pueden eliminar clientes.");
+    alert('Solo el Administrador o el Gerente pueden eliminar clientes.');
     return;
   }
-  if (confirm("¿Estás seguro de eliminar este cliente?")) {
-    const idx = clientes.findIndex(c => c.id === id);
-    if (idx !== -1) {
-      clientes[idx].eliminado = true;
-      saveData('ca_clientes', clientes);
-      pushToCloudStorage();
-      try {
-        await fetch('/api/clientes/' + encodeURIComponent(id), { method: 'DELETE' });
-      } catch (e) {}
-      renderCatalogosTables();
+  if (confirm('¿Estás seguro de eliminar este cliente?')) {
+    try {
+      await fetch(`${SQL_TUNNEL_BASE}/api/clientes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await fetchAPIData();
+    } catch (e) {
+      alert('Error al eliminar. Verifique el túnel Cloudflare.');
     }
   }
 };
 
 window.removeOperador = async function(id) {
   if (currentUser.rol !== 'Administrador' && currentUser.rol !== 'Gerente') {
-    alert("Solo el Administrador o el Gerente pueden eliminar operadores.");
+    alert('Solo el Administrador o el Gerente pueden eliminar operadores.');
     return;
   }
-  if (confirm("¿Estás seguro de eliminar este operador?")) {
-    const idx = operadores.findIndex(o => o.id === id);
-    if (idx !== -1) {
-      operadores[idx].eliminado = true;
-      saveData('ca_operadores', operadores);
-      pushToCloudStorage();
-      try { await fetch('/api/operadores/' + encodeURIComponent(id), { method: 'DELETE' }); } catch (e) {}
-      renderCatalogosTables();
+  if (confirm('¿Estás seguro de eliminar este operador?')) {
+    try {
+      await fetch(`${SQL_TUNNEL_BASE}/api/operadores/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await fetchAPIData();
+    } catch (e) {
+      alert('Error al eliminar. Verifique el túnel Cloudflare.');
     }
   }
 };
 
 window.removeVendedor = async function(id) {
   if (currentUser.rol !== 'Administrador' && currentUser.rol !== 'Gerente') {
-    alert("Solo el Administrador o el Gerente pueden eliminar vendedores.");
+    alert('Solo el Administrador o el Gerente pueden eliminar vendedores.');
     return;
   }
-  if (confirm("¿Estás seguro de eliminar este vendedor?")) {
-    const idx = vendedores.findIndex(v => v.id === id);
-    if (idx !== -1) {
-      vendedores[idx].eliminado = true;
-      saveData('ca_vendedores', vendedores);
-      pushToCloudStorage();
-      try { await fetch('/api/vendedores/' + encodeURIComponent(id), { method: 'DELETE' }); } catch (e) {}
-      renderCatalogosTables();
+  if (confirm('¿Estás seguro de eliminar este vendedor?')) {
+    try {
+      await fetch(`${SQL_TUNNEL_BASE}/api/vendedores/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await fetchAPIData();
+    } catch (e) {
+      alert('Error al eliminar. Verifique el túnel Cloudflare.');
     }
   }
 };
 
 window.removeProveedor = async function(id) {
   if (currentUser.rol !== 'Administrador' && currentUser.rol !== 'Gerente') {
-    alert("Solo el Administrador o el Gerente pueden eliminar proveedores.");
+    alert('Solo el Administrador o el Gerente pueden eliminar proveedores.');
     return;
   }
-  if (confirm("¿Estás seguro de eliminar este proveedor?")) {
-    const idx = proveedores.findIndex(p => p.id === id);
-    if (idx !== -1) {
-      proveedores[idx].eliminado = true;
-      saveData('ca_proveedores', proveedores);
-      pushToCloudStorage();
-      try { await fetch('/api/proveedores/' + encodeURIComponent(id), { method: 'DELETE' }); } catch (e) {}
-      renderCatalogosTables();
+  if (confirm('¿Estás seguro de eliminar este proveedor?')) {
+    try {
+      await fetch(`${SQL_TUNNEL_BASE}/api/proveedores/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await fetchAPIData();
+    } catch (e) {
+      alert('Error al eliminar. Verifique el túnel Cloudflare.');
     }
   }
 };

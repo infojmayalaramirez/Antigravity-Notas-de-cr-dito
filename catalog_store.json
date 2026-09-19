@@ -2,45 +2,52 @@
   "clientes": [
     {
       "id": "2543",
-      "codigo": "2543",
       "nombre": "Rosalina Varela Rivera",
-      "derechoDescuento": true
+      "codigoInterno": "2543",
+      "tieneDerechoDescuento": true,
+      "eliminado": false
     },
     {
       "id": "2471",
-      "codigo": "2471",
       "nombre": "Alejandro Ortiz",
-      "derechoDescuento": true
+      "codigoInterno": "2471",
+      "tieneDerechoDescuento": true,
+      "eliminado": false
     },
     {
       "id": "001",
-      "codigo": "001",
       "nombre": "Pepe Ayala",
-      "derechoDescuento": true
+      "codigoInterno": "001",
+      "tieneDerechoDescuento": true,
+      "eliminado": false
     },
     {
       "id": "2465",
-      "codigo": "2465",
       "nombre": "Plasticos el Carrousel",
-      "derechoDescuento": true
+      "codigoInterno": "2465",
+      "tieneDerechoDescuento": true,
+      "eliminado": false
     },
     {
       "id": "2500",
-      "codigo": "2500",
       "nombre": "Pedro Perez González",
-      "derechoDescuento": true
+      "codigoInterno": "2500",
+      "tieneDerechoDescuento": true,
+      "eliminado": false
     },
     {
       "id": "PRU20260917_1",
-      "codigo": "PRU20260917",
       "nombre": "Cliente P",
-      "derechoDescuento": false
+      "codigoInterno": "PRU20260917",
+      "tieneDerechoDescuento": false,
+      "eliminado": false
     },
     {
       "id": "PRU20260917_2",
-      "codigo": "PRU20260917",
       "nombre": "Cliente Prueba Remota SQL",
-      "derechoDescuento": false
+      "codigoInterno": "PRU20260917",
+      "tieneDerechoDescuento": false,
+      "eliminado": false
     }
   ],
   "operadores": [],
