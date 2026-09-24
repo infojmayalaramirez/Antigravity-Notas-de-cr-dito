@@ -89,7 +89,7 @@ let productosMasterPicking = loadData('ca_productos_picking_master', []);
 // --- SINCRONIZACIÓN DIRECTA CON SQL SERVER VÍA CLOUDFLARE TUNNEL ---
 // El túnel de Cloudflare expone el servidor Node.js local (SQL Server Express) al mundo.
 // Esta URL es el puente entre cualquier celular/computadora y la base de datos real.
-const SQL_TUNNEL_BASE = 'https://rob-occurrence-workplace-representative.trycloudflare.com';
+const SQL_TUNNEL_BASE = 'https://saving-duck-preparation-oral.trycloudflare.com';
 const CLOUD_SYNC_ENDPOINT = '/.netlify/functions/sync'; // mantener como respaldo
 let isSyncingWithCloud = false;
 let cloudPushTimer = null;
