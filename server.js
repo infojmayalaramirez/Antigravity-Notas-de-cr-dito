@@ -191,6 +191,18 @@ async function ensureDatabaseSchema() {
                 );
         `);
 
+        // 7. Añadir columnas extra a dbo.Notas si la tabla ya existía con esquema viejo
+        await pool.request().query(`
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='partidas')
+                ALTER TABLE dbo.Notas ADD partidas VARCHAR(MAX) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='productos')
+                ALTER TABLE dbo.Notas ADD productos VARCHAR(MAX) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='estado_autorizacion')
+                ALTER TABLE dbo.Notas ADD estado_autorizacion VARCHAR(50) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='estado_operacion')
+                ALTER TABLE dbo.Notas ADD estado_operacion VARCHAR(50) NULL;
+        `);
+
         console.log('[SQL Server] ✅ Esquema verificado y listo.');
     } catch (err) {
         console.error('[SQL Server] ❌ Error ajustando esquema:', err.message);
