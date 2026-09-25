@@ -1487,6 +1487,9 @@
             <button class="btn btn-secondary btn-sm" onclick="fetchAPIData().then(() => alert('Catálogos sincronizados correctamente.'))"
               style="margin-left: auto; border-bottom-left-radius:0; border-bottom-right-radius:0; border-bottom:none; font-weight:600;"><i
                 class="fa-solid fa-rotate"></i> Sincronizar Catálogos</button>
+            <button class="btn btn-warning btn-sm" onclick="migrarLocalStorageASQL()" id="btn-migrar-sql"
+              style="border-bottom-left-radius:0; border-bottom-right-radius:0; border-bottom:none; font-weight:600; background:#d97706; color:white; border-color:#d97706;"><i
+                class="fa-solid fa-database"></i> Migrar a SQL</button>
             <button class="btn btn-secondary btn-sm" onclick="exportarDatosJSON()"
               style="border-bottom-left-radius:0; border-bottom-right-radius:0; border-bottom:none; font-weight:600;"><i
                 class="fa-solid fa-file-export"></i> Exportar Respaldo</button>

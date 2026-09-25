@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Exportar Datos a SQL Server</title>
+<style>
+  body { font-family: Arial, sans-serif; background: #1a1a2e; color: #eee; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+  .card { background: #16213e; border-radius: 16px; padding: 40px; max-width: 500px; width: 90%; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+  h1 { color: #e94560; margin-bottom: 10px; }
+  p { color: #aaa; margin-bottom: 30px; line-height: 1.6; }
+  .btn { background: #e94560; color: white; border: none; padding: 16px 32px; border-radius: 8px; font-size: 18px; cursor: pointer; width: 100%; transition: all 0.2s; }
+  .btn:hover { background: #c73652; transform: translateY(-2px); }
+  .btn:disabled { background: #555; cursor: not-allowed; transform: none; }
+  .status { margin-top: 20px; padding: 16px; border-radius: 8px; display: none; }
+  .status.ok { background: #0a3d0a; border: 1px solid #2d8a2d; color: #7fff7f; display: block; }
+  .status.error { background: #3d0a0a; border: 1px solid #8a2d2d; color: #ff7f7f; display: block; }
+  .status.info { background: #0a1a3d; border: 1px solid #2d5a8a; color: #7fbfff; display: block; }
+  .counts { text-align: left; margin-top: 12px; font-size: 14px; line-height: 1.8; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🔄 Migrar Datos a SQL Server</h1>
+  <p>Este botón lee todos sus clientes, operadores, vendedores y proveedores del navegador y los sube a SQL Server para que todos los dispositivos los vean.</p>
+  <button class="btn" id="btn" onclick="migrar()">Subir mis datos a SQL Server</button>
+  <div class="status" id="status"></div>
+</div>
+
+<script>
+async function migrar() {
+  const btn = document.getElementById('btn');
+  const status = document.getElementById('status');
+  btn.disabled = true;
+  btn.textContent = 'Leyendo datos...';
+
+  // Leer localStorage del origen de nccansa.netlify.app
+  // Esta página corre en localhost:3000, no en Netlify,
+  // así que NO tiene acceso al localStorage de Netlify.
+  // En cambio, leemos el localStorage AQUÍ (localhost).
+  const allKeys = Object.keys(localStorage);
+  
+  const data = {};
+  allKeys.forEach(k => {
+    try { data[k] = JSON.parse(localStorage.getItem(k)); }
+    catch { data[k] = localStorage.getItem(k); }
+  });
+
+  const clientes    = (data['ca_clientes']    || []).filter(c => c && c.id);
+  const operadores  = (data['ca_operadores']  || []).filter(o => o && o.id);
+  const vendedores  = (data['ca_vendedores']  || []).filter(v => v && v.id);
+  const proveedores = (data['ca_proveedores'] || []).filter(p => p && p.id);
+  const usuarios    = (data['ca_usuarios']    || []).filter(u => u && u.id);
+  const notas       = (data['ca_notas']       || []).filter(n => n && n.id);
+
+  const counts = { clientes: clientes.length, operadores: operadores.length, vendedores: vendedores.length, proveedores: proveedores.length, usuarios: usuarios.length, notas: notas.length };
+  
+  if (clientes.length === 0 && operadores.length === 0 && usuarios.length === 0) {
+    status.className = 'status error';
+    status.innerHTML = '❌ No se encontraron datos en este navegador.<br><br>Debe abrir esta página (<b>http://localhost:3000/migrar</b>) en el mismo Chrome donde usa el sistema (<b>nccansa.netlify.app</b>).';
+    btn.disabled = false;
+    btn.textContent = 'Subir mis datos a SQL Server';
+    return;
+  }
+
+  status.className = 'status info';
+  status.innerHTML = `📦 Encontrados: ${clientes.length} clientes, ${operadores.length} operadores, ${vendedores.length} vendedores, ${proveedores.length} proveedores<br><br>Subiendo a SQL Server...`;
+
+  btn.textContent = 'Subiendo a SQL Server...';
+
+  try {
+    const res = await fetch('/api/migrar-localstorage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clientes, operadores, vendedores, proveedores, usuarios, notas })
+    });
+    const result = await res.json();
+
+    if (result.success) {
+      status.className = 'status ok';
+      status.innerHTML = `✅ <b>¡Migración exitosa!</b><br><br>
+        <div class="counts">
+          👥 Clientes migrados: <b>${result.clientes}</b><br>
+          🚗 Operadores migrados: <b>${result.operadores}</b><br>
+          💼 Vendedores migrados: <b>${result.vendedores}</b><br>
+          🏭 Proveedores migrados: <b>${result.proveedores}</b><br>
+          👤 Usuarios migrados: <b>${result.usuarios}</b>
+        </div><br>
+        Ahora todos los dispositivos verán estos datos. ✅`;
+      btn.textContent = '✅ Migración completa';
+    } else {
+      throw new Error(result.error || 'Error desconocido');
+    }
+  } catch (e) {
+    status.className = 'status error';
+    status.innerHTML = `❌ Error: ${e.message}`;
+    btn.disabled = false;
+    btn.textContent = 'Reintentar';
+  }
+}
+</script>
+</body>
+</html>

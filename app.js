@@ -1,4 +1,4 @@
-﻿// app.js
+// app.js
 // Lógica principal y control de la SPA para Notas de Crédito Casa Ayala
 // Versión con seguridad NIP, impresión en lotes, cascada de descuentos, y restricciones de roles.
 
@@ -413,6 +413,77 @@ window.exportarDatosJSON = function() {
   a.download = `casa_ayala_respaldo_${new Date().toISOString().split('T')[0]}.json`;
   a.click();
   URL.revokeObjectURL(url);
+};
+
+// Migración única: sube todos los datos del localStorage de ESTE navegador a SQL Server
+window.migrarLocalStorageASQL = async function() {
+  const btn = document.getElementById('btn-migrar-sql');
+  const originalText = btn ? btn.innerHTML : '';
+
+  // Leer directamente del localStorage (este código corre en nccansa.netlify.app)
+  function leerLS(key) {
+    try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : []; }
+    catch { return []; }
+  }
+
+  const payload = {
+    clientes:    leerLS('ca_clientes').filter(c => c && c.id),
+    operadores:  leerLS('ca_operadores').filter(o => o && o.id),
+    vendedores:  leerLS('ca_vendedores').filter(v => v && v.id),
+    proveedores: leerLS('ca_proveedores').filter(p => p && p.id),
+    usuarios:    leerLS('ca_usuarios').filter(u => u && (u.id || u.id_usuario)),
+    notas:       leerLS('ca_notas').filter(n => n && n.id),
+  };
+
+  const total = payload.clientes.length + payload.operadores.length + payload.vendedores.length + payload.proveedores.length;
+
+  if (total === 0) {
+    alert('No se encontraron datos en el localStorage de este navegador.\n\nAsegúrese de estar usando el navegador donde normalmente trabaja con el sistema.');
+    return;
+  }
+
+  const confirmar = confirm(
+    `Se van a subir a SQL Server:\n\n` +
+    `👥 ${payload.clientes.length} clientes\n` +
+    `🚗 ${payload.operadores.length} operadores\n` +
+    `💼 ${payload.vendedores.length} vendedores\n` +
+    `🏭 ${payload.proveedores.length} proveedores\n` +
+    `👤 ${payload.usuarios.length} usuarios\n\n` +
+    `¿Continuar?`
+  );
+  if (!confirmar) return;
+
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Subiendo...'; }
+
+  try {
+    const res = await fetch(`${SQL_TUNNEL_BASE}/api/migrar-localstorage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const result = await res.json();
+
+    if (result.success) {
+      alert(
+        `✅ ¡Migración exitosa!\n\n` +
+        `Clientes subidos:    ${result.clientes}\n` +
+        `Operadores subidos:  ${result.operadores}\n` +
+        `Vendedores subidos:  ${result.vendedores}\n` +
+        `Proveedores subidos: ${result.proveedores}\n` +
+        `Usuarios subidos:    ${result.usuarios}\n\n` +
+        `Todos los dispositivos verán estos datos ahora.`
+      );
+      await fetchAPIData(); // Refrescar la vista con los datos de SQL
+    } else {
+      throw new Error(result.error || 'Error desconocido');
+    }
+  } catch (err) {
+    alert(`❌ Error al migrar: ${err.message}\n\nVerifique que el servidor esté corriendo y el túnel activo.`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = originalText; }
+  }
 };
 
 window.importarDatosJSON = function(event) {

@@ -987,6 +987,104 @@ app.post('/api/login', async (req, res) => {
 });
 
 // =====================================================================
+// MIGRACIÓN: localStorage -> SQL Server (ejecutar UNA VEZ desde localhost)
+// =====================================================================
+app.get('/migrar', (req, res) => res.sendFile(path.join(__dirname, 'migrar.html')));
+
+app.post('/api/migrar-localstorage', async (req, res) => {
+    const { clientes = [], operadores = [], vendedores = [], proveedores = [], usuarios = [], notas = [] } = req.body;
+    const pool = await getPool();
+    let counts = { clientes: 0, operadores: 0, vendedores: 0, proveedores: 0, usuarios: 0, notas: 0 };
+
+    // Clientes
+    for (const c of clientes.filter(c => c && c.id)) {
+        try {
+            const id     = String(c.id).slice(0, 50);
+            const nombre = String(c.nombre || '').slice(0, 255);
+            const codigo = String(c.codigoInterno || c.codigo || c.id).slice(0, 50);
+            const desc   = (c.tieneDerechoDescuento || c.derechoDescuento) ? 1 : 0;
+            if (c.eliminado) { await pool.request().input('id', sql.VarChar, id).query('UPDATE dbo.Clientes SET eliminado=1 WHERE id_cliente=@id'); continue; }
+            await pool.request()
+                .input('id', sql.VarChar, id).input('nombre', sql.VarChar, nombre)
+                .input('codigo', sql.VarChar, codigo).input('desc', sql.Bit, desc)
+                .query(`IF NOT EXISTS (SELECT 1 FROM dbo.Clientes WHERE id_cliente=@id)
+                    INSERT INTO dbo.Clientes (id_cliente,nombre,codigo_interno,tiene_derecho_descuento,eliminado) VALUES (@id,@nombre,@codigo,@desc,0)
+                    ELSE UPDATE dbo.Clientes SET nombre=@nombre,codigo_interno=@codigo,tiene_derecho_descuento=@desc WHERE id_cliente=@id`);
+            counts.clientes++;
+        } catch(e) { console.warn('[migrar] cliente', c.id, e.message); }
+    }
+
+    // Operadores
+    for (const o of operadores.filter(o => o && o.id && !o.eliminado)) {
+        try {
+            await pool.request()
+                .input('id', sql.VarChar, String(o.id).slice(0,50))
+                .input('nombre', sql.VarChar, String(o.nombre||'').slice(0,255))
+                .input('puesto', sql.VarChar, String(o.puesto||'').slice(0,255))
+                .query(`IF NOT EXISTS (SELECT 1 FROM dbo.Operadores WHERE id_operador=@id)
+                    INSERT INTO dbo.Operadores (id_operador,nombre,puesto,eliminado) VALUES (@id,@nombre,@puesto,0)
+                    ELSE UPDATE dbo.Operadores SET nombre=@nombre,puesto=@puesto WHERE id_operador=@id`);
+            counts.operadores++;
+        } catch(e) { console.warn('[migrar] operador', o.id, e.message); }
+    }
+
+    // Vendedores
+    for (const v of vendedores.filter(v => v && v.id && !v.eliminado)) {
+        try {
+            await pool.request()
+                .input('id', sql.VarChar, String(v.id).slice(0,50))
+                .input('nombre', sql.VarChar, String(v.nombre||'').slice(0,255))
+                .input('suc', sql.VarChar, String(v.sucursalId||v.id_sucursal||'S01').slice(0,10))
+                .input('usr', sql.VarChar, String(v.userId||v.id_usuario||'').slice(0,10))
+                .query(`IF NOT EXISTS (SELECT 1 FROM dbo.Vendedores WHERE id_vendedor=@id)
+                    INSERT INTO dbo.Vendedores (id_vendedor,nombre,id_sucursal,id_usuario,eliminado) VALUES (@id,@nombre,@suc,@usr,0)
+                    ELSE UPDATE dbo.Vendedores SET nombre=@nombre WHERE id_vendedor=@id`);
+            counts.vendedores++;
+        } catch(e) { console.warn('[migrar] vendedor', v.id, e.message); }
+    }
+
+    // Proveedores
+    for (const p of proveedores.filter(p => p && p.id && !p.eliminado)) {
+        try {
+            const cj = Array.isArray(p.clientesCajon) ? JSON.stringify(p.clientesCajon) : '[]';
+            await pool.request()
+                .input('id', sql.VarChar, String(p.id).slice(0,50))
+                .input('nombre', sql.VarChar, String(p.nombre||'').slice(0,255))
+                .input('d1', sql.Float, p.desc1||0).input('d2', sql.Float, p.desc2||0).input('d3', sql.Float, p.desc3||0)
+                .input('cj', sql.VarChar, cj.slice(0,2000))
+                .input('tp', sql.VarChar, String(p.tipoPromo||'').slice(0,50))
+                .input('fi', sql.VarChar, String(p.fechaInicio||'').slice(0,20))
+                .input('ff', sql.VarChar, String(p.fechaFin||'').slice(0,20))
+                .query(`IF NOT EXISTS (SELECT 1 FROM dbo.Proveedores WHERE id_proveedor=@id)
+                    INSERT INTO dbo.Proveedores (id_proveedor,nombre,desc1,desc2,desc3,clientes_cajon,tipo_promo,fecha_inicio,fecha_fin,eliminado)
+                    VALUES (@id,@nombre,@d1,@d2,@d3,@cj,@tp,@fi,@ff,0)
+                    ELSE UPDATE dbo.Proveedores SET nombre=@nombre,desc1=@d1,desc2=@d2,desc3=@d3,clientes_cajon=@cj WHERE id_proveedor=@id`);
+            counts.proveedores++;
+        } catch(e) { console.warn('[migrar] proveedor', p.id, e.message); }
+    }
+
+    // Usuarios
+    for (const u of usuarios.filter(u => u && (u.id||u.id_usuario))) {
+        try {
+            const uid = String(u.id||u.id_usuario).slice(0,10);
+            await pool.request()
+                .input('id', sql.VarChar, uid)
+                .input('nombre', sql.VarChar, String(u.nombre||'').slice(0,255))
+                .input('rol', sql.VarChar, String(u.rol||'Vendedor').slice(0,50))
+                .input('pin', sql.VarChar, String(u.nip||u.pin||'').slice(0,20))
+                .input('suc', sql.VarChar, String(u.sucursalId||u.id_sucursal||'S01').slice(0,10))
+                .query(`IF NOT EXISTS (SELECT 1 FROM dbo.Usuarios WHERE id_usuario=@id)
+                    INSERT INTO dbo.Usuarios (id_usuario,nombre,rol,pin,id_sucursal) VALUES (@id,@nombre,@rol,@pin,@suc)
+                    ELSE UPDATE dbo.Usuarios SET nombre=@nombre,rol=@rol,pin=@pin WHERE id_usuario=@id`);
+            counts.usuarios++;
+        } catch(e) { console.warn('[migrar] usuario', u.id, e.message); }
+    }
+
+    console.log('[MIGRACIÓN] Completada:', counts);
+    res.json({ success: true, ...counts });
+});
+
+// =====================================================================
 // ARCHIVOS ESTÁTICOS Y ARRANQUE
 // =====================================================================
 app.use(express.static(path.join(__dirname)));
