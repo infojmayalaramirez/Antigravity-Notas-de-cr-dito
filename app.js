@@ -87,16 +87,55 @@ let faltantesPicking = [];
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
 // --- SINCRONIZACIÓN DIRECTA CON SQL SERVER VÍA CLOUDFLARE TUNNEL ---
-// El túnel de Cloudflare expone el servidor Node.js local (SQL Server Express) al mundo.
-// Esta URL es el puente entre cualquier celular/computadora y la base de datos real.
-const SQL_TUNNEL_BASE = 'https://saving-duck-preparation-oral.trycloudflare.com';
-const CLOUD_SYNC_ENDPOINT = '/.netlify/functions/sync'; // mantener como respaldo
+// La URL del túnel se descarga dinámicamente de GitHub en cada arranque.
+// Así Netlify NUNCA necesita redesplegar cuando cambia el túnel.
+
+const GITHUB_TUNNEL_FILE = 'https://raw.githubusercontent.com/infojmayalaramirez/Antigravity-Notas-de-cr-dito/main/current_tunnel.json';
+let SQL_TUNNEL_BASE = ''; // Se llena automáticamente al arrancar
+const CLOUD_SYNC_ENDPOINT = '/.netlify/functions/sync';
 let isSyncingWithCloud = false;
 let cloudPushTimer = null;
 let isMergingFromCloud = false;
 
+// Detectar si corremos desde el mismo servidor (localhost o túnel)
+// En ese caso, las peticiones van al mismo origen sin necesitar la URL del túnel
+const IS_SAME_ORIGIN = (
+  window.location.hostname === 'localhost' ||
+  window.location.hostname.includes('trycloudflare.com') ||
+  window.location.hostname.includes('192.168.') ||
+  window.location.hostname.includes('26.179.')
+);
+
+// Resolver la URL del servidor SQL dinámicamente
+async function resolveServerURL() {
+  if (IS_SAME_ORIGIN) {
+    // Corremos desde el servidor mismo o la red local — usar origen relativo
+    SQL_TUNNEL_BASE = window.location.origin;
+    console.log('[SQL] Modo directo:', SQL_TUNNEL_BASE);
+    return;
+  }
+  // Corremos desde Netlify — descargar URL actual del túnel desde GitHub
+  try {
+    const r = await fetch(GITHUB_TUNNEL_FILE + '?t=' + Date.now(), { cache: 'no-store' });
+    if (r.ok) {
+      const data = await r.json();
+      if (data && data.url) {
+        SQL_TUNNEL_BASE = data.url;
+        console.log('[SQL] URL del túnel desde GitHub:', SQL_TUNNEL_BASE, '(actualizado:', data.updated, ')');
+        return;
+      }
+    }
+  } catch (e) {
+    console.warn('[SQL] No se pudo leer la URL del túnel desde GitHub:', e.message);
+  }
+  // Fallback: intentar con la última URL conocida
+  SQL_TUNNEL_BASE = 'https://saving-duck-preparation-oral.trycloudflare.com';
+  console.warn('[SQL] Usando URL de respaldo:', SQL_TUNNEL_BASE);
+}
+
 // Función principal: obtiene TODOS los datos reales del SQL Server via túnel
 async function fetchFromSQLServer() {
+  if (!SQL_TUNNEL_BASE) await resolveServerURL();
   try {
     const res = await fetch(`${SQL_TUNNEL_BASE}/api/catalogos/all`, {
       cache: 'no-store',
@@ -115,6 +154,7 @@ async function fetchFromSQLServer() {
 
 // Función para escribir al SQL Server via túnel (guardar cambios)
 async function pushToSQLServer(entity, item) {
+  if (!SQL_TUNNEL_BASE) await resolveServerURL();
   try {
     const endpoint = `${SQL_TUNNEL_BASE}/api/${entity}`;
     await fetch(endpoint, {
@@ -124,6 +164,9 @@ async function pushToSQLServer(entity, item) {
     });
   } catch (e) {}
 }
+
+// Arrancar resolución de URL inmediatamente (asíncrono)
+resolveServerURL();
 
 // Inicialización de Google Cloud Firebase (como respaldo secundario)
 let googleCloudDb = null;

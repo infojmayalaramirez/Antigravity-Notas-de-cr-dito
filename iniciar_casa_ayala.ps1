@@ -59,28 +59,21 @@ Write-Host "  OK - Nueva URL del tunel:" -ForegroundColor Green
 Write-Host "       $TunnelURL" -ForegroundColor Cyan
 Write-Host ""
 
-# 5. Actualizar app.js y publicar en Netlify
-Write-Host "  [5/5] Actualizando app.js y publicando a Netlify..." -ForegroundColor Yellow
-$AppJsPath = Join-Path $ProjectDir "app.js"
-$AppContent = Get-Content $AppJsPath -Raw -Encoding UTF8
-$Pattern = "const SQL_TUNNEL_BASE = 'https://[^']+\.trycloudflare\.com'"
-$Replace  = "const SQL_TUNNEL_BASE = '$TunnelURL'"
-$Updated  = $AppContent -replace $Pattern, $Replace
+# 5. Actualizar current_tunnel.json y publicar en GitHub
+Write-Host "  [5/5] Publicando nueva URL del tunel a GitHub..." -ForegroundColor Yellow
 
-if ($Updated -ne $AppContent) {
-    [System.IO.File]::WriteAllText($AppJsPath, $Updated, [System.Text.Encoding]::UTF8)
-    Write-Host "         app.js actualizado." -ForegroundColor Green
+$TunnelJsonPath = Join-Path $ProjectDir "current_tunnel.json"
+$TunnelJson = "{""url"":""$TunnelURL"",""updated"":""$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')""}"
+[System.IO.File]::WriteAllText($TunnelJsonPath, $TunnelJson, [System.Text.Encoding]::UTF8)
+Write-Host "         current_tunnel.json actualizado." -ForegroundColor Green
 
-    git add app.js 2>&1 | Out-Null
-    git commit -m "auto: tunel Cloudflare -> $TunnelURL" 2>&1 | Out-Null
-    $PushResult = git push 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "         Netlify notificado correctamente (git push OK)." -ForegroundColor Green
-    } else {
-        Write-Host "         Advertencia: git push fallo. URL guardada localmente." -ForegroundColor DarkYellow
-    }
+git add current_tunnel.json 2>&1 | Out-Null
+git commit -m "auto: tunel Cloudflare -> $TunnelURL" 2>&1 | Out-Null
+$PushResult = git push 2>&1
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "         GitHub actualizado. En 5 min todos los dispositivos usaran la nueva URL." -ForegroundColor Green
 } else {
-    Write-Host "         URL sin cambio - no se hizo commit." -ForegroundColor DarkGray
+    Write-Host "         Advertencia: git push fallo. URL guardada solo localmente." -ForegroundColor DarkYellow
 }
 
 # Resultado final
