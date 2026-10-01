@@ -1056,9 +1056,9 @@ app.post('/api/migrar-localstorage', async (req, res) => {
                 .input('fi', sql.VarChar, String(p.fechaInicio||'').slice(0,20))
                 .input('ff', sql.VarChar, String(p.fechaFin||'').slice(0,20))
                 .query(`IF NOT EXISTS (SELECT 1 FROM dbo.Proveedores WHERE id_proveedor=@id)
-                    INSERT INTO dbo.Proveedores (id_proveedor,nombre,desc1,desc2,desc3,clientes_cajon,tipo_promo,fecha_inicio,fecha_fin,eliminado)
+                    INSERT INTO dbo.Proveedores (id_proveedor,nombre,desc1,desc2,desc3,clientes_cajon_json,tipo_promo,fecha_inicio,fecha_fin,eliminado)
                     VALUES (@id,@nombre,@d1,@d2,@d3,@cj,@tp,@fi,@ff,0)
-                    ELSE UPDATE dbo.Proveedores SET nombre=@nombre,desc1=@d1,desc2=@d2,desc3=@d3,clientes_cajon=@cj WHERE id_proveedor=@id`);
+                    ELSE UPDATE dbo.Proveedores SET nombre=@nombre,desc1=@d1,desc2=@d2,desc3=@d3,clientes_cajon_json=@cj WHERE id_proveedor=@id`);
             counts.proveedores++;
         } catch(e) { console.warn('[migrar] proveedor', p.id, e.message); }
     }
@@ -1071,11 +1071,11 @@ app.post('/api/migrar-localstorage', async (req, res) => {
                 .input('id', sql.VarChar, uid)
                 .input('nombre', sql.VarChar, String(u.nombre||'').slice(0,255))
                 .input('rol', sql.VarChar, String(u.rol||'Vendedor').slice(0,50))
-                .input('pin', sql.VarChar, String(u.nip||u.pin||'').slice(0,20))
+                .input('nip', sql.VarChar, String(u.nip||u.pin||'').slice(0,20))
                 .input('suc', sql.VarChar, String(u.sucursalId||u.id_sucursal||'S01').slice(0,10))
                 .query(`IF NOT EXISTS (SELECT 1 FROM dbo.Usuarios WHERE id_usuario=@id)
-                    INSERT INTO dbo.Usuarios (id_usuario,nombre,rol,pin,id_sucursal) VALUES (@id,@nombre,@rol,@pin,@suc)
-                    ELSE UPDATE dbo.Usuarios SET nombre=@nombre,rol=@rol,pin=@pin WHERE id_usuario=@id`);
+                    INSERT INTO dbo.Usuarios (id_usuario,nombre,rol,nip,id_sucursal) VALUES (@id,@nombre,@rol,@nip,@suc)
+                    ELSE UPDATE dbo.Usuarios SET nombre=@nombre,rol=@rol,nip=@nip WHERE id_usuario=@id`);
             counts.usuarios++;
         } catch(e) { console.warn('[migrar] usuario', u.id, e.message); }
     }
