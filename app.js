@@ -875,7 +875,7 @@ function setupLoginHandler() {
 
     // 1. Intentar autenticación mediante API REST (si el backend Node.js / SQL Server está disponible)
     try {
-      const response = await fetch('/api/login', {
+      const response = await fetch(`${SQL_TUNNEL_BASE}/api/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nip: nipInput, email: email })
@@ -3454,7 +3454,7 @@ window.toggleSucursalFinanciera = async function(id) {
     s.activaFinanciera = !s.activaFinanciera;
     let apiWorked = false;
     try {
-      const res = await fetch('/api/sucursales', {
+      const res = await fetch(`${SQL_TUNNEL_BASE}/api/sucursales`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(s)
@@ -3484,7 +3484,7 @@ window.removeSucursal = async function(id) {
   if (confirm("¿Estás seguro de eliminar esta sucursal?")) {
     let apiWorked = false;
     try {
-      const res = await fetch(`/api/sucursales/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const res = await fetch(`${SQL_TUNNEL_BASE}/api/sucursales/${encodeURIComponent(id)}`, { method: 'DELETE' });
       const ct = res.headers.get('content-type') || '';
       if (res.ok && ct.includes('application/json')) {
         apiWorked = true;
@@ -3559,7 +3559,7 @@ function setupUsuariosView() {
 
     let apiWorked = false;
     try {
-      const res = await fetch('/api/usuarios', {
+      const res = await fetch(`${SQL_TUNNEL_BASE}/api/usuarios`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -3705,7 +3705,7 @@ window.unlockUsuario = async function(id) {
     u.bloqueado = false;
     let apiWorked = false;
     try {
-      const res = await fetch('/api/usuarios', {
+      const res = await fetch(`${SQL_TUNNEL_BASE}/api/usuarios`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...u, bloqueado: false })
@@ -3742,7 +3742,7 @@ window.regenerateUserNip = async function(id) {
 
     let apiWorked = false;
     try {
-      const res = await fetch('/api/usuarios', {
+      const res = await fetch(`${SQL_TUNNEL_BASE}/api/usuarios`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...u, nip: nuevoNip, bloqueado: false })
@@ -3784,7 +3784,7 @@ window.removeUsuario = async function(id) {
   if (confirm("¿Estás seguro de eliminar este usuario?")) {
     let apiWorked = false;
     try {
-      const res = await fetch(`/api/usuarios/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const res = await fetch(`${SQL_TUNNEL_BASE}/api/usuarios/${encodeURIComponent(id)}`, { method: 'DELETE' });
       const ct = res.headers.get('content-type') || '';
       if (res.ok && ct.includes('application/json')) {
         apiWorked = true;
@@ -6167,7 +6167,7 @@ function setupFaltantesPickingView() {
 
     // 3. Enviar a la API remota si está disponible
     try {
-      await fetch('/api/faltantes-picking', {
+      await fetch(`${SQL_TUNNEL_BASE}/api/faltantes-picking`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(nuevoFaltante)
@@ -6404,7 +6404,7 @@ window.deleteFaltantePicking = function(id) {
     faltantesPicking.splice(idx, 1);
     saveData('ca_faltantes_picking', faltantesPicking);
     try {
-      fetch(`/api/faltantes-picking/${id}`, { method: 'DELETE' });
+      fetch(`${SQL_TUNNEL_BASE}/api/faltantes-picking/${id}`, { method: 'DELETE' });
     } catch (err) {}
     alert("Registro eliminado.");
     renderFaltantesPickingView();
