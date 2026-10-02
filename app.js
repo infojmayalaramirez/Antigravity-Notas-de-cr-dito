@@ -129,7 +129,7 @@ async function resolveServerURL() {
     console.warn('[SQL] No se pudo leer la URL del túnel desde GitHub:', e.message);
   }
   // Fallback: intentar con la última URL conocida
-  SQL_TUNNEL_BASE = 'https://saving-duck-preparation-oral.trycloudflare.com';
+  SQL_TUNNEL_BASE = 'https://savings-experts-explosion-interesting.trycloudflare.com';
   console.warn('[SQL] Usando URL de respaldo:', SQL_TUNNEL_BASE);
 }
 
