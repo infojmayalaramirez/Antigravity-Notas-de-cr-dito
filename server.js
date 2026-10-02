@@ -736,68 +736,86 @@ app.get('/api/notas', async (req, res) => {
 app.post('/api/notas', async (req, res) => {
     try {
         const nota = req.body;
-        const notaId     = parseInt(nota.id || nota.folio || Date.now().toString().slice(-6), 10);
-        const notaTipo   = String(nota.tipo || nota.tipo_nota || 'Físico').trim().slice(0,50);
-        const total      = parseFloat(nota.montoTotal || nota.total || nota.subtotal || 0);
-        const cliente    = String(nota.clienteNombre || nota.cliente || '').trim().slice(0,200);
-        const operador   = String(nota.operadorNombre || nota.operador || '').trim().slice(0,200);
-        const creador    = String(nota.vendedorId || nota.idUsuarioCreador || nota.creador || 'U01').trim().slice(0,10);
-        const sucursal   = String(nota.sucursalId || 'S01').trim().slice(0,10);
-        const partidas   = JSON.stringify(Array.isArray(nota.partidas) ? nota.partidas : (Array.isArray(nota.productos) ? nota.productos : []));
-        const estadoAut  = String(nota.estado_autorizacion || 'Autorizada').trim().slice(0,50);
-        const estadoOp   = String(nota.estado_operacion || 'Activa').trim().slice(0,50);
+
+        // Fix: extraer folio numerico - strip prefijo "N" si existe (e.g. "N1001" -> 1001)
+        const folioRaw  = String(nota.folio || nota.id || '').replace(/\D/g, '');
+        const notaId    = parseInt(folioRaw || String(Date.now()).slice(-6), 10);
+
+        const notaTipo  = String(nota.tipo || nota.tipo_nota || 'Fisico').trim().slice(0, 50);
+        const total     = parseFloat(nota.total || nota.montoTotal || nota.subtotal || 0);
+        // Fix: usar clienteId y operadorId del frontend (no clienteNombre/operadorNombre)
+        const clienteId  = String(nota.clienteId  || '').trim().slice(0, 50);
+        const operadorId = String(nota.operadorId  || '').trim().slice(0, 50);
+        const vendedorId = String(nota.vendedorId  || 'U01').trim().slice(0, 10);
+        const sucursal   = String(nota.sucursalId  || 'S01').trim().slice(0, 10);
+        const estadoAut  = String(nota.estado_autorizacion || 'Autorizada').trim().slice(0, 50);
+        const estadoOp   = String(nota.estado_operacion    || 'Activa').trim().slice(0, 50);
+        const fechaEmis  = nota.fechaEmision ? nota.fechaEmision.substring(0, 10) : null;
+
+        // Fix: guardar nota COMPLETA como JSON para no perder ningun campo
+        // (serie, facturas, firmas, causaMarcar, observaciones, claveInterna, etc.)
+        const notaSinFoto = { ...nota };
+        delete notaSinFoto.incidenciaFoto; // base64 demasiado grande para BD
+        const datosJson = JSON.stringify(notaSinFoto);
 
         const pool = await getPool();
 
-        // Asegurar columnas de estado si son nuevas
+        // Asegurar columnas nuevas si no existen
         await pool.request().query(`
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='partidas')
-                ALTER TABLE dbo.Notas ADD partidas VARCHAR(MAX) NULL;
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='productos')
-                ALTER TABLE dbo.Notas ADD productos VARCHAR(MAX) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='datos_json')
+                ALTER TABLE dbo.Notas ADD datos_json VARCHAR(MAX) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='id_cliente')
+                ALTER TABLE dbo.Notas ADD id_cliente VARCHAR(50) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='id_operador')
+                ALTER TABLE dbo.Notas ADD id_operador VARCHAR(50) NULL;
             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='estado_autorizacion')
                 ALTER TABLE dbo.Notas ADD estado_autorizacion VARCHAR(50) NULL;
             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='estado_operacion')
                 ALTER TABLE dbo.Notas ADD estado_operacion VARCHAR(50) NULL;
-        `).catch(()=>{});
+        `).catch(() => {});
 
         await pool.request()
-            .input('id',      sql.Int, notaId)
-            .input('folio',   sql.Int, notaId)
-            .input('tipo',    sql.VarChar, notaTipo)
-            .input('total',   sql.Decimal(18,2), total)
-            .input('cliente', sql.VarChar, cliente)
-            .input('oper',    sql.VarChar, operador)
-            .input('creador', sql.VarChar, creador)
-            .input('suc',     sql.VarChar, sucursal)
-            .input('parts',   sql.VarChar, partidas)
-            .input('estAut',  sql.VarChar, estadoAut)
-            .input('estOp',   sql.VarChar, estadoOp)
+            .input('id',       sql.Int,           notaId)
+            .input('folio',    sql.Int,           notaId)
+            .input('tipo',     sql.VarChar,       notaTipo)
+            .input('total',    sql.Decimal(18,2),  total)
+            .input('cliId',    sql.VarChar,       clienteId)
+            .input('opeId',    sql.VarChar,       operadorId)
+            .input('creador',  sql.VarChar,       vendedorId)
+            .input('suc',      sql.VarChar,       sucursal)
+            .input('estAut',   sql.VarChar,       estadoAut)
+            .input('estOp',    sql.VarChar,       estadoOp)
+            .input('fecha',    sql.VarChar,       fechaEmis)
+            .input('json',     sql.VarChar,       datosJson)
             .query(`
                 IF EXISTS (SELECT 1 FROM dbo.Notas WHERE id_nota=@id)
                     UPDATE dbo.Notas
-                    SET tipo_nota=@tipo, monto_total=@total, cliente_nombre=@cliente,
-                        operador_nombre=@oper, id_usuario_creador=@creador,
-                        id_sucursal=@suc, partidas=@parts,
-                        estado_autorizacion=@estAut, estado_operacion=@estOp
+                    SET tipo_nota=@tipo, monto_total=@total,
+                        id_cliente=@cliId, id_operador=@opeId,
+                        cliente_nombre=@cliId, operador_nombre=@opeId,
+                        id_usuario_creador=@creador, id_sucursal=@suc,
+                        estado_autorizacion=@estAut, estado_operacion=@estOp,
+                        datos_json=@json
                     WHERE id_nota=@id
                 ELSE
                     INSERT INTO dbo.Notas
-                    (id_nota,folio_consecutivo,tipo_nota,impresa,monto_total,cliente_nombre,
-                     operador_nombre,id_usuario_creador,id_sucursal,fecha_emision,
-                     partidas,estado_autorizacion,estado_operacion)
-                    VALUES (@id,@folio,@tipo,0,@total,@cliente,@oper,@creador,@suc,GETDATE(),
-                            @parts,@estAut,@estOp)
+                    (id_nota, folio_consecutivo, tipo_nota, impresa, monto_total,
+                     id_cliente, id_operador, cliente_nombre, operador_nombre,
+                     id_usuario_creador, id_sucursal,
+                     fecha_emision, estado_autorizacion, estado_operacion, datos_json)
+                    VALUES (@id, @folio, @tipo, 0, @total,
+                            @cliId, @opeId, @cliId, @opeId, @creador, @suc,
+                            ISNULL(TRY_CAST(@fecha AS DATE), GETDATE()),
+                            @estAut, @estOp, @json)
             `);
 
-        console.log(`[POST /api/notas] Nota #${notaId} guardada.`);
+        console.log('[POST /api/notas] Nota #' + notaId + ' (' + notaTipo + ') guardada. Total: $' + total);
         res.json({ success: true, id: notaId });
     } catch (error) {
         console.error('[POST /api/notas]', error.message);
         res.status(500).json({ error: error.message });
     }
-});
-
+})
 app.delete('/api/notas/:id', async (req, res) => {
     try {
         const pool = await getPool();
@@ -825,7 +843,7 @@ app.get('/api/catalogos/all', async (req, res) => {
             pool.request().query(`SELECT id_presupuesto AS id, ISNULL(vendedor_id,'') AS vendedorId, ISNULL(mes,'') AS mes, ISNULL(limite,0) AS limite, ISNULL(consumido,0) AS consumido, ISNULL(fecha_limite,'') AS fechaLimite, ISNULL(bloquear_exceso,0) AS bloquearExceso FROM dbo.Presupuestos`),
             pool.request().query(`SELECT id_usuario AS id, id_usuario, nombre, email, rol, id_sucursal AS sucursalId, id_sucursal, nip, bloqueado, admin_tipo AS adminTipo, ISNULL(telefono,'') AS telefono, ISNULL(direccion,'') AS direccion FROM dbo.Usuarios ORDER BY nombre`),
             pool.request().query(`SELECT id_sucursal AS id, id_sucursal, nombre, ISNULL(direccion,'') AS direccion, activa_financiera AS activaFinanciera FROM dbo.Sucursales ORDER BY id_sucursal`),
-            pool.request().query(`SELECT id_nota AS id_nota, folio_consecutivo AS folio, ISNULL(tipo_nota,'Fisico') AS tipo, ISNULL(cliente_nombre,'') AS clienteNombre, ISNULL(operador_nombre,'') AS operadorNombre, ISNULL(monto_total,0) AS montoTotal, ISNULL(id_usuario_creador,'') AS vendedorId, ISNULL(id_sucursal,'S01') AS sucursalId, CONVERT(VARCHAR(10),fecha_emision,23) AS fechaEmision, ISNULL(estado_autorizacion,'Autorizada') AS estado_autorizacion, ISNULL(estado_operacion,'Activa') AS estado_operacion, ISNULL(partidas,'[]') AS partidas FROM dbo.Notas ORDER BY fecha_emision DESC`)
+            pool.request().query(`SELECT id_nota AS id_nota, folio_consecutivo AS folio, ISNULL(tipo_nota,'Fisico') AS tipo, ISNULL(cliente_nombre,'') AS clienteNombre, ISNULL(operador_nombre,'') AS operadorNombre, ISNULL(monto_total,0) AS montoTotal, ISNULL(id_usuario_creador,'') AS vendedorId, ISNULL(id_sucursal,'S01') AS sucursalId, CONVERT(VARCHAR(10),fecha_emision,23) AS fechaEmision, ISNULL(estado_autorizacion,'Autorizada') AS estado_autorizacion, ISNULL(estado_operacion,'Activa') AS estado_operacion, ISNULL(partidas,'[]') AS partidas, ISNULL(datos_json,'') AS datos_json FROM dbo.Notas ORDER BY fecha_emision DESC`)
         ]);
 
         const proveedores = provR.recordset.map(p => ({
@@ -836,10 +854,28 @@ app.get('/api/catalogos/all', async (req, res) => {
         }));
 
         const notas = notasR.recordset.map(n => {
-            n.id = n.id_nota; n.total = parseFloat(n.montoTotal||0); n.montoTotal = n.total;
-            if (typeof n.partidas==='string') { try { n.partidas=JSON.parse(n.partidas); } catch(e){ n.partidas=[]; } }
+            // Si hay datos_json completo, usarlo como base (preserva todos los campos)
+            if (n.datos_json) {
+                try {
+                    const full = JSON.parse(n.datos_json);
+                    // Asegurar id y folio correctos
+                    full.id    = full.id    || ('N' + n.id_nota);
+                    full.folio = full.folio || n.id_nota;
+                    full.total = parseFloat(full.total || n.montoTotal || 0);
+                    full.montoTotal = full.total;
+                    // Asegurar estado de la BD (puede haber sido actualizado externamente)
+                    full.estado_autorizacion = n.estado_autorizacion || full.estado_autorizacion;
+                    full.estado_operacion    = n.estado_operacion    || full.estado_operacion;
+                    return full;
+                } catch(e) {}
+            }
+            // Fallback: construir objeto basico desde columnas SQL
+            n.id = 'N' + n.id_nota;
+            n.total = parseFloat(n.montoTotal || 0);
+            n.montoTotal = n.total;
+            if (typeof n.partidas === 'string') { try { n.partidas = JSON.parse(n.partidas); } catch(e) { n.partidas = []; } }
             return n;
-        });
+        })
 
         const usuarios = usuR.recordset.map(u => ({ ...u, id: u.id_usuario, id: u.id_usuario }));
 

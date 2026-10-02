@@ -2328,7 +2328,7 @@ function saveProductsToHistory(validProducts) {
   populateProductDatalists();
 }
 
-function submitPhysicalNote(isDraft) {
+async function submitPhysicalNote(isDraft) {
   const validProducts = currentFisicaProducts.filter(p => p !== null);
   if (validProducts.length === 0) {
     alert("Debe registrar al menos un producto.");
@@ -2416,12 +2416,17 @@ function submitPhysicalNote(isDraft) {
 
   notas.push(nuevaNota);
   saveData('ca_notas', notas);
-  pushToCloudStorage();
-  // Guardar nota en SQL Server via túnel Cloudflare (fuente real)
-  pushToSQLServer('notas', nuevaNota);
-  
+  // Guardar en SQL Server y esperar confirmacion
+  try {
+    await pushToSQLServer('notas', nuevaNota);
+  } catch(e) {
+    console.warn('[submitPhysicalNote] Error SQL:', e);
+  }
+  // Refrescar desde SQL Server para sincronizar todos los dispositivos
+  await fetchAPIData();
+
   alert(isDraft ? "Borrador guardado." : "Nota de crédito física emitida.");
-  
+
   if (currentUser.rol === 'Vendedor') {
     switchView('dashboard');
   } else {
@@ -2760,7 +2765,7 @@ function validateFinancialBudgetAndClient() {
   }
 }
 
-function submitFinancialNote(isDraft) {
+async function submitFinancialNote(isDraft) {
   const subtotal = parseFloat(document.getElementById('nfi-subtotal').value) || 0;
   const total = parseFloat(document.getElementById('nfi-total-label').textContent) || 0;
   
@@ -2901,8 +2906,14 @@ function submitFinancialNote(isDraft) {
 
   notas.push(nuevaNota);
   saveData('ca_notas', notas);
-  pushToCloudStorage();
-  pushToSQLServer('notas', nuevaNota); // guardar en SQL Server real
+  // Guardar en SQL Server y esperar confirmacion
+  try {
+    await pushToSQLServer('notas', nuevaNota);
+  } catch(e) {
+    console.warn('[submitFinancialNote] Error SQL:', e);
+  }
+  // Refrescar desde SQL Server para sincronizar todos los dispositivos
+  await fetchAPIData();
 
   if (isDraft) {
     alert("Borrador guardado.");
@@ -2911,7 +2922,7 @@ function submitFinancialNote(isDraft) {
   } else {
     alert("Nota financiera emitida.");
   }
-  
+
   if (currentUser.rol === 'Vendedor') {
     switchView('dashboard');
   } else {
