@@ -424,10 +424,20 @@ async function fetchAPIData() {
   }
 
   // --- REPINTAR TODA LA UI con datos frescos del SQL Server ---
+  // NOTA: NO llamar renderNotasFisicasList ni renderNotasFinancierasList aquí.
+  // Esas funciones cambian la subvista a LIST lo que interrumpe el formulario activo.
+  // En cambio, solo se refresca si el usuario NO está en esos formularios.
   populateLoginUserSelect();
   if (typeof refreshAllModuleDropdowns === 'function') refreshAllModuleDropdowns();
-  if (typeof renderNotasFisicasList === 'function') renderNotasFisicasList();
-  if (typeof renderNotasFinancierasList === 'function') renderNotasFinancierasList();
+  
+  // Solo refrescar listas si el usuario NO está llenando un formulario de nota
+  const formViews = ['notas-fisicas', 'notas-financieras'];
+  const onForm = formViews.includes(currentView);
+  if (!onForm) {
+    if (typeof renderNotasFisicasList === 'function') renderNotasFisicasList();
+    if (typeof renderNotasFinancierasList === 'function') renderNotasFinancierasList();
+  }
+  
   if (typeof renderUsuariosTable === 'function') renderUsuariosTable();
   if (typeof renderCatalogosTables === 'function') renderCatalogosTables();
   if (typeof renderSucursalesTable === 'function') renderSucursalesTable();
@@ -1248,12 +1258,14 @@ function refreshCurrentView() {
       initDashboard();
       break;
     case 'notas-fisicas':
-      showSubView('notas-fisicas', 'form');
-      resetPhysicalForm();
+      // NO resetear el formulario aquí — solo refrescar dropdowns.
+      // El reset solo ocurre al navegar hacia la vista (switchView) o
+      // al hacer clic en "Nueva Nota".
+      if (typeof refreshAllModuleDropdowns === 'function') refreshAllModuleDropdowns();
       break;
     case 'notas-financieras':
-      showSubView('notas-financieras', 'form');
-      resetFinancialForm();
+      // Igual: NO resetear el formulario financiero en cada refresh.
+      if (typeof refreshAllModuleDropdowns === 'function') refreshAllModuleDropdowns();
       break;
     case 'presupuestos':
       renderPresupuestosGrid();
