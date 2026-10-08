@@ -752,11 +752,40 @@ function setupClientAutocomplete(prefix) { // prefix = 'nf' o 'nfi'
     dropdown.classList.remove('hidden');
   };
 
+  const autoResolveClient = () => {
+    if (hiddenInput.value) return;
+    const val = searchInput.value.trim();
+    if (!val) return;
+    const clean = val.replace(/^\[.*?\]\s*/, '').replace(/[\[\]]/g, '').trim().toLowerCase();
+    const listClients = (clientes || []).filter(c => c && !c.eliminado);
+    
+    const found = listClients.find(c => {
+      const code = String(c.codigoInterno || c.codigo || c.id || '').toLowerCase();
+      const nom = String(c.nombre || '').toLowerCase();
+      return code === clean || nom === clean || code === val.toLowerCase() || nom === val.toLowerCase();
+    }) || listClients.find(c => {
+      const code = String(c.codigoInterno || c.codigo || c.id || '').toLowerCase();
+      const nom = String(c.nombre || '').toLowerCase();
+      return code.includes(clean) || nom.includes(clean);
+    });
+
+    if (found) {
+      const codeStr = found.codigoInterno || found.codigo || found.id || '';
+      searchInput.value = `[${codeStr}] ${found.nombre}`;
+      hiddenInput.value = found.id;
+      hiddenInput.dispatchEvent(new Event('change'));
+    }
+  };
+
   searchInput.addEventListener('input', () => {
     hiddenInput.value = ''; // Limpiar id si el usuario vuelve a escribir
     renderMatches();
   });
   
+  searchInput.addEventListener('blur', () => {
+    setTimeout(autoResolveClient, 200);
+  });
+
   // Mostrar opciones al hacer clic o al enfocar el campo
   searchInput.addEventListener('focus', () => {
     try { searchInput.select(); } catch(e) {}
@@ -1090,6 +1119,8 @@ function logout() {
   activeUserId = null;
   currentUser = null;
   localStorage.removeItem('ca_active_user_id');
+  localStorage.removeItem('ca_current_user');
+  sessionStorage.clear();
   checkLoginSession();
 }
 
@@ -2366,7 +2397,35 @@ async function submitPhysicalNote(isDraft) {
   }
 
   const sucursalId = document.getElementById('nf-sucursal').value;
-  const clienteId = document.getElementById('nf-cliente').value;
+  let clienteId = document.getElementById('nf-cliente').value;
+  const searchVal = document.getElementById('nf-cliente-search').value.trim();
+
+  if (!clienteId && searchVal) {
+    const clean = searchVal.replace(/^\[.*?\]\s*/, '').replace(/[\[\]]/g, '').trim().toLowerCase();
+    const listClients = (clientes || []).filter(c => c && !c.eliminado);
+    const found = listClients.find(c => {
+      const code = String(c.codigoInterno || c.codigo || c.id || '').toLowerCase();
+      const nom = String(c.nombre || '').toLowerCase();
+      return code === clean || nom === clean || code === searchVal.toLowerCase() || nom === searchVal.toLowerCase();
+    }) || listClients.find(c => {
+      const code = String(c.codigoInterno || c.codigo || c.id || '').toLowerCase();
+      const nom = String(c.nombre || '').toLowerCase();
+      return code.includes(clean) || nom.includes(clean);
+    });
+
+    if (found) {
+      clienteId = found.id;
+      document.getElementById('nf-cliente').value = found.id;
+      const codeStr = found.codigoInterno || found.codigo || found.id || '';
+      document.getElementById('nf-cliente-search').value = `[${codeStr}] ${found.nombre}`;
+    }
+  }
+
+  if (!isDraft && !clienteId) {
+    alert("Debe seleccionar un cliente válido del buscador de autocompletado.");
+    document.getElementById('nf-cliente-search').focus();
+    return;
+  }
   const vendedorId = document.getElementById('nf-vendedor').value;
   const operadorId = document.getElementById('nf-operador').value;
   
@@ -2811,7 +2870,35 @@ async function submitFinancialNote(isDraft) {
   let esPendiente = false;
 
   const sucursalId = document.getElementById('nfi-sucursal').value;
-  const clienteId = document.getElementById('nfi-cliente').value;
+  let clienteId = document.getElementById('nfi-cliente').value;
+  const searchVal = document.getElementById('nfi-cliente-search').value.trim();
+
+  if (!clienteId && searchVal) {
+    const clean = searchVal.replace(/^\[.*?\]\s*/, '').replace(/[\[\]]/g, '').trim().toLowerCase();
+    const listClients = (clientes || []).filter(c => c && !c.eliminado);
+    const found = listClients.find(c => {
+      const code = String(c.codigoInterno || c.codigo || c.id || '').toLowerCase();
+      const nom = String(c.nombre || '').toLowerCase();
+      return code === clean || nom === clean || code === searchVal.toLowerCase() || nom === searchVal.toLowerCase();
+    }) || listClients.find(c => {
+      const code = String(c.codigoInterno || c.codigo || c.id || '').toLowerCase();
+      const nom = String(c.nombre || '').toLowerCase();
+      return code.includes(clean) || nom.includes(clean);
+    });
+
+    if (found) {
+      clienteId = found.id;
+      document.getElementById('nfi-cliente').value = found.id;
+      const codeStr = found.codigoInterno || found.codigo || found.id || '';
+      document.getElementById('nfi-cliente-search').value = `[${codeStr}] ${found.nombre}`;
+    }
+  }
+
+  if (!isDraft && !clienteId) {
+    alert("Debe seleccionar un cliente válido del buscador de autocompletado.");
+    document.getElementById('nfi-cliente-search').focus();
+    return;
+  }
   const vendedorId = document.getElementById('nfi-vendedor').value;
   const proveedorId = document.getElementById('nfi-proveedor').value;
   const provObj = proveedores.find(p => p.id === proveedorId);
