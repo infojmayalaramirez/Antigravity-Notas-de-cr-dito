@@ -54,13 +54,28 @@ function ensureAllSqlClientsExist(localClients) {
   const clientMap = new Map();
   DEFAULT_CLIENTES_FALLBACK.forEach(c => {
     if (c && (c.id || c.codigo || c.nombre)) {
-      clientMap.set(String(c.id || c.codigo || c.nombre), c);
+      clientMap.set(String(c.id || c.codigo || c.nombre), {
+        id: c.id,
+        codigoInterno: c.codigo || c.codigoInterno || c.id,
+        nombre: c.nombre,
+        tieneDerechoDescuento: c.derechoDescuento !== undefined ? c.derechoDescuento : true,
+        eliminado: false
+      });
     }
   });
   (localClients || []).forEach(c => {
-    if (c && (c.id || c.codigo || c.nombre)) {
-      const key = String(c.id || c.codigo || c.nombre);
-      clientMap.set(key, { ...clientMap.get(key), ...c });
+    if (c && (c.id || c.id_cliente || c.codigo || c.codigo_interno || c.codigoInterno || c.nombre)) {
+      const idVal = String(c.id || c.id_cliente || c.codigo || c.codigo_interno || c.codigoInterno || c.nombre);
+      const prev = clientMap.get(idVal) || {};
+      clientMap.set(idVal, {
+        ...prev,
+        ...c,
+        id: c.id || c.id_cliente || prev.id || idVal,
+        codigoInterno: c.codigoInterno || c.codigo_interno || c.codigo || prev.codigoInterno || idVal,
+        nombre: c.nombre || prev.nombre || idVal,
+        tieneDerechoDescuento: c.tieneDerechoDescuento !== undefined ? c.tieneDerechoDescuento : (c.tiene_derecho_descuento !== undefined ? c.tiene_derecho_descuento : (prev.tieneDerechoDescuento !== undefined ? prev.tieneDerechoDescuento : true)),
+        eliminado: c.eliminado || false
+      });
     }
   });
   return Array.from(clientMap.values());
@@ -77,7 +92,7 @@ const DEFAULT_SUCURSALES_MAESTRAS = [
 // Los datos se obtienen en el primer fetchAPIData() que se ejecuta inmediatamente al cargar.
 let usuarios = [];
 let sucursales = DEFAULT_SUCURSALES_MAESTRAS;
-let clientes = [];
+let clientes = ensureAllSqlClientsExist([]);
 let operadores = [];
 let vendedores = [];
 let presupuestos = [];
@@ -393,7 +408,9 @@ async function fetchAPIData() {
       sucursales = sqlData.sucursales;
     }
     if (Array.isArray(sqlData.clientes)) {
-      clientes = sqlData.clientes;
+      clientes = ensureAllSqlClientsExist(sqlData.clientes);
+    } else {
+      clientes = ensureAllSqlClientsExist(clientes);
     }
     if (Array.isArray(sqlData.operadores)) {
       operadores = sqlData.operadores;
@@ -676,11 +693,17 @@ function setupClientAutocomplete(prefix) { // prefix = 'nf' o 'nfi'
   
   if (!searchInput || !hiddenInput || !dropdown) return;
   
+  const normalizeStr = (str) => String(str || '').normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
   const renderMatches = () => {
     const rawQuery = searchInput.value.trim();
     
     // Obtener lista de clientes activos
     let listClients = (clientes || []).filter(c => c && !c.eliminado);
+    if (listClients.length === 0) {
+      listClients = ensureAllSqlClientsExist([]);
+      clientes = listClients;
+    }
     let matches = [];
 
     if (!rawQuery) {
@@ -688,18 +711,20 @@ function setupClientAutocomplete(prefix) { // prefix = 'nf' o 'nfi'
       matches = listClients.slice(0, 25);
     } else {
       // Extraer texto de búsqueda limpio (removiendo prefijo de código [C01])
-      const cleanQuery = rawQuery.replace(/^\[.*?\]\s*/, '').replace(/[\[\]]/g, '').trim().toLowerCase();
+      const cleanRaw = rawQuery.replace(/^\[.*?\]\s*/, '').replace(/[\[\]]/g, '').trim();
+      const cleanNorm = normalizeStr(cleanRaw);
+      const rawNorm = normalizeStr(rawQuery);
       
       matches = listClients.filter(c => {
-        const nombre = String(c.nombre || '').toLowerCase();
-        const codigo = String(c.codigoInterno || c.codigo || c.id || '').toLowerCase();
-        const fullText = `[${codigo}] ${nombre}`.toLowerCase();
+        const nomNorm = normalizeStr(c.nombre);
+        const codNorm = normalizeStr(c.codigoInterno || c.codigo || c.id);
+        const fullNorm = normalizeStr(`[${codNorm}] ${nomNorm}`);
         
-        return nombre.includes(cleanQuery) || 
-               codigo.includes(cleanQuery) || 
-               fullText.includes(rawQuery.toLowerCase()) ||
-               nombre.includes(rawQuery.toLowerCase()) ||
-               codigo.includes(rawQuery.toLowerCase());
+        return nomNorm.includes(cleanNorm) || 
+               codNorm.includes(cleanNorm) || 
+               fullNorm.includes(rawNorm) ||
+               nomNorm.includes(rawNorm) ||
+               codNorm.includes(rawNorm);
       });
     }
     
@@ -756,17 +781,22 @@ function setupClientAutocomplete(prefix) { // prefix = 'nf' o 'nfi'
     if (hiddenInput.value) return;
     const val = searchInput.value.trim();
     if (!val) return;
-    const clean = val.replace(/^\[.*?\]\s*/, '').replace(/[\[\]]/g, '').trim().toLowerCase();
-    const listClients = (clientes || []).filter(c => c && !c.eliminado);
+    let listClients = (clientes || []).filter(c => c && !c.eliminado);
+    if (listClients.length === 0) {
+      listClients = ensureAllSqlClientsExist([]);
+      clientes = listClients;
+    }
+    const cleanNorm = normalizeStr(val.replace(/^\[.*?\]\s*/, '').replace(/[\[\]]/g, '').trim());
+    const valNorm = normalizeStr(val);
     
     const found = listClients.find(c => {
-      const code = String(c.codigoInterno || c.codigo || c.id || '').toLowerCase();
-      const nom = String(c.nombre || '').toLowerCase();
-      return code === clean || nom === clean || code === val.toLowerCase() || nom === val.toLowerCase();
+      const code = normalizeStr(c.codigoInterno || c.codigo || c.id);
+      const nom = normalizeStr(c.nombre);
+      return code === cleanNorm || nom === cleanNorm || code === valNorm || nom === valNorm;
     }) || listClients.find(c => {
-      const code = String(c.codigoInterno || c.codigo || c.id || '').toLowerCase();
-      const nom = String(c.nombre || '').toLowerCase();
-      return code.includes(clean) || nom.includes(clean);
+      const code = normalizeStr(c.codigoInterno || c.codigo || c.id);
+      const nom = normalizeStr(c.nombre);
+      return code.includes(cleanNorm) || nom.includes(cleanNorm);
     });
 
     if (found) {
