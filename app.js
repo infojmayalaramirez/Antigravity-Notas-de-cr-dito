@@ -676,23 +676,32 @@ function setupClientAutocomplete(prefix) { // prefix = 'nf' o 'nfi'
   
   if (!searchInput || !hiddenInput || !dropdown) return;
   
-  searchInput.addEventListener('input', (e) => {
-    const query = e.target.value.toLowerCase().trim();
-    hiddenInput.value = ''; // Limpiar selección actual si escribe
+  const renderMatches = () => {
+    const rawQuery = searchInput.value.trim();
     
-    if (!query) {
-      dropdown.innerHTML = '';
-      dropdown.classList.add('hidden');
-      return;
+    // Obtener lista de clientes activos
+    let listClients = (clientes || []).filter(c => c && !c.eliminado);
+    let matches = [];
+
+    if (!rawQuery) {
+      // Si el campo está vacío, mostrar primeros 25 clientes disponibles
+      matches = listClients.slice(0, 25);
+    } else {
+      // Extraer texto de búsqueda limpio (removiendo prefijo de código [C01])
+      const cleanQuery = rawQuery.replace(/^\[.*?\]\s*/, '').replace(/[\[\]]/g, '').trim().toLowerCase();
+      
+      matches = listClients.filter(c => {
+        const nombre = String(c.nombre || '').toLowerCase();
+        const codigo = String(c.codigoInterno || c.codigo || c.id || '').toLowerCase();
+        const fullText = `[${codigo}] ${nombre}`.toLowerCase();
+        
+        return nombre.includes(cleanQuery) || 
+               codigo.includes(cleanQuery) || 
+               fullText.includes(rawQuery.toLowerCase()) ||
+               nombre.includes(rawQuery.toLowerCase()) ||
+               codigo.includes(rawQuery.toLowerCase());
+      });
     }
-    
-    // Filtrar clientes activos (sin restringir la búsqueda por proveedor para permitir flexibilidad completa)
-    let listClients = clientes.filter(c => !c.eliminado);
-    
-    const matches = listClients.filter(c => 
-      c.nombre.toLowerCase().includes(query) || 
-      c.codigoInterno.toLowerCase().includes(query)
-    );
     
     dropdown.innerHTML = '';
     if (matches.length === 0) {
@@ -708,43 +717,60 @@ function setupClientAutocomplete(prefix) { // prefix = 'nf' o 'nfi'
     matches.forEach(c => {
       const item = document.createElement('div');
       item.className = 'autocomplete-item';
+      const codeStr = c.codigoInterno || c.codigo || c.id || '';
       item.innerHTML = `
         <span>${c.nombre}</span>
-        <span class="autocomplete-item-code">${c.codigoInterno}</span>
+        <span class="autocomplete-item-code">${codeStr}</span>
       `;
-      item.addEventListener('click', () => {
-        searchInput.value = `[${c.codigoInterno}] ${c.nombre}`;
+      const selectItem = (evt) => {
+        if (evt) evt.preventDefault();
+        searchInput.value = `[${codeStr}] ${c.nombre}`;
         hiddenInput.value = c.id;
         dropdown.classList.add('hidden');
         
         // Disparar evento change en el input oculto
         hiddenInput.dispatchEvent(new Event('change'));
         if (prefix === 'nfi') {
-          const provId = document.getElementById('nfi-proveedor').value;
-          const p = proveedores.find(pr => pr.id === provId);
+          const provSelect = document.getElementById('nfi-proveedor');
+          const provId = provSelect ? provSelect.value : '';
+          const p = (proveedores || []).find(pr => pr.id === provId);
           if (p && p.tipoPromo !== 'promocion_abierta') {
             if (!(p.clientesCajon || []).includes(c.id)) {
               alert("Atención: El cliente seleccionado no pertenece a la lista exclusiva de este proveedor.");
             }
           }
-          validateFinancialBudgetAndClient();
+          if (typeof validateFinancialBudgetAndClient === 'function') {
+            validateFinancialBudgetAndClient();
+          }
         }
-      });
+      };
+
+      item.addEventListener('mousedown', selectItem);
+      item.addEventListener('click', selectItem);
       dropdown.appendChild(item);
     });
     dropdown.classList.remove('hidden');
+  };
+
+  searchInput.addEventListener('input', () => {
+    hiddenInput.value = ''; // Limpiar id si el usuario vuelve a escribir
+    renderMatches();
+  });
+  
+  // Mostrar opciones al hacer clic o al enfocar el campo
+  searchInput.addEventListener('focus', () => {
+    try { searchInput.select(); } catch(e) {}
+    renderMatches();
+  });
+
+  searchInput.addEventListener('click', () => {
+    renderMatches();
   });
   
   // Cerrar el dropdown al hacer click fuera
   document.addEventListener('click', (e) => {
     if (!searchInput.contains(e.target) && !dropdown.contains(e.target)) {
       dropdown.classList.add('hidden');
-    }
-  });
-  
-  searchInput.addEventListener('focus', () => {
-    if (searchInput.value === '') {
-      searchInput.dispatchEvent(new Event('input'));
     }
   });
 }
