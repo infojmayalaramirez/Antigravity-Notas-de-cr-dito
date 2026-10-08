@@ -193,6 +193,12 @@ async function ensureDatabaseSchema() {
 
         // 7. Añadir columnas extra a dbo.Notas si la tabla ya existía con esquema viejo
         await pool.request().query(`
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='datos_json')
+                ALTER TABLE dbo.Notas ADD datos_json VARCHAR(MAX) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='id_cliente')
+                ALTER TABLE dbo.Notas ADD id_cliente VARCHAR(50) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='id_operador')
+                ALTER TABLE dbo.Notas ADD id_operador VARCHAR(50) NULL;
             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='partidas')
                 ALTER TABLE dbo.Notas ADD partidas VARCHAR(MAX) NULL;
             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='productos')

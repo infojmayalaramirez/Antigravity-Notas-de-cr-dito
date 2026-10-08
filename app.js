@@ -76,7 +76,7 @@ const DEFAULT_SUCURSALES_MAESTRAS = [
 // FRONTEND STATELESS: arrays vacíos al arranque. SQL Server es la única fuente de verdad.
 // Los datos se obtienen en el primer fetchAPIData() que se ejecuta inmediatamente al cargar.
 let usuarios = [];
-let sucursales = [];
+let sucursales = DEFAULT_SUCURSALES_MAESTRAS;
 let clientes = [];
 let operadores = [];
 let vendedores = [];
@@ -417,10 +417,14 @@ async function fetchAPIData() {
     }
     updateSyncStatusUI('🟢 SQL Server Conectado', true);
   } else {
-    // Sin conexión al túnel: mostrar advertencia pero NO cargar datos de localStorage
+    // Sin conexión al túnel: mostrar advertencia
     updateSyncStatusUI('🔴 Sin conexión a SQL Server', false);
-    console.warn('[fetchAPIData] Túnel no disponible. Los datos en pantalla pueden estar desactualizados.');
-    return; // No repintar con datos viejos
+    console.warn('[fetchAPIData] Túnel no disponible. Usando catálogos base de respaldo.');
+    if (!Array.isArray(sucursales) || sucursales.length === 0) {
+      sucursales = DEFAULT_SUCURSALES_MAESTRAS;
+    }
+    if (typeof refreshAllModuleDropdowns === 'function') refreshAllModuleDropdowns();
+    return;
   }
 
   // --- REPINTAR TODA LA UI con datos frescos del SQL Server ---
