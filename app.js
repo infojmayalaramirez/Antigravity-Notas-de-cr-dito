@@ -1153,6 +1153,7 @@ function logout() {
   sessionStorage.clear();
   checkLoginSession();
 }
+window.logout = logout;
 
 function generateRandomNIP() {
   return String(Math.floor(1000 + Math.random() * 9000));
