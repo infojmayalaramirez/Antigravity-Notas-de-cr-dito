@@ -811,6 +811,14 @@ function setupClientAutocomplete(prefix) { // prefix = 'nf' o 'nfi'
     hiddenInput.value = ''; // Limpiar id si el usuario vuelve a escribir
     renderMatches();
   });
+
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      autoResolveClient();
+      dropdown.classList.add('hidden');
+    }
+  });
   
   searchInput.addEventListener('blur', () => {
     setTimeout(autoResolveClient, 200);
@@ -1148,10 +1156,17 @@ function setupUnlockAdminHandler() {
 function logout() {
   activeUserId = null;
   currentUser = null;
-  localStorage.removeItem('ca_active_user_id');
-  localStorage.removeItem('ca_current_user');
-  sessionStorage.clear();
-  checkLoginSession();
+  try { localStorage.removeItem('ca_active_user_id'); } catch(e){}
+  try { localStorage.removeItem('ca_current_user'); } catch(e){}
+  try { sessionStorage.clear(); } catch(e){}
+  
+  const loginContainer = document.getElementById('login-container');
+  const appContainer = document.getElementById('app-container');
+  if (loginContainer) loginContainer.classList.remove('hidden');
+  if (appContainer) appContainer.classList.add('hidden');
+  
+  // Forzar recarga o redirección limpia al login
+  window.location.href = window.location.pathname;
 }
 window.logout = logout;
 
