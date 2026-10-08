@@ -747,7 +747,8 @@ app.post('/api/notas', async (req, res) => {
         const folioRaw  = String(nota.folio || nota.id || '').replace(/\D/g, '');
         const notaId    = parseInt(folioRaw || String(Date.now()).slice(-6), 10);
 
-        const notaTipo  = String(nota.tipo || nota.tipo_nota || 'Fisico').trim().slice(0, 50);
+        const notaTipoRaw = String(nota.tipo || nota.tipo_nota || 'Fisico').trim();
+        const notaTipo    = notaTipoRaw.toLowerCase().includes('finan') ? 'Financiera' : 'Física';
         const total     = parseFloat(nota.total || nota.montoTotal || nota.subtotal || 0);
         // Fix: usar clienteId y operadorId del frontend (no clienteNombre/operadorNombre)
         const clienteId  = String(nota.clienteId  || '').trim().slice(0, 50);
@@ -804,6 +805,8 @@ app.post('/api/notas', async (req, res) => {
                         datos_json=@json
                     WHERE id_nota=@id
                 ELSE
+                BEGIN
+                    SET IDENTITY_INSERT dbo.Notas ON;
                     INSERT INTO dbo.Notas
                     (id_nota, folio_consecutivo, tipo_nota, impresa, monto_total,
                      id_cliente, id_operador, cliente_nombre, operador_nombre,
@@ -812,7 +815,9 @@ app.post('/api/notas', async (req, res) => {
                     VALUES (@id, @folio, @tipo, 0, @total,
                             @cliId, @opeId, @cliId, @opeId, @creador, @suc,
                             ISNULL(TRY_CAST(@fecha AS DATE), GETDATE()),
-                            @estAut, @estOp, @json)
+                            @estAut, @estOp, @json);
+                    SET IDENTITY_INSERT dbo.Notas OFF;
+                END
             `);
 
         console.log('[POST /api/notas] Nota #' + notaId + ' (' + notaTipo + ') guardada. Total: $' + total);
