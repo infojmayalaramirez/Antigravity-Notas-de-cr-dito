@@ -425,7 +425,38 @@ async function fetchAPIData() {
       presupuestos = sqlData.presupuestos;
     }
     if (Array.isArray(sqlData.notas)) {
-      notas = sqlData.notas;
+      notas = sqlData.notas.map(n => {
+        let parsedJson = {};
+        if (n.datos_json) {
+          try { parsedJson = typeof n.datos_json === 'string' ? JSON.parse(n.datos_json) : n.datos_json; } catch(e){}
+        }
+        const fullNota = { ...parsedJson, ...n };
+        const rawTipo = String(fullNota.tipo || fullNota.tipo_nota || 'Fisico').trim().toLowerCase();
+        const isFin = rawTipo.includes('finan');
+        const numId = String(fullNota.id || fullNota.id_nota || ('N' + (fullNota.folio || '')));
+        
+        return {
+          ...fullNota,
+          id: numId,
+          folio: String(fullNota.folio || fullNota.folio_consecutivo || fullNota.id_nota || numId.replace(/\D/g, '')),
+          serie: fullNota.serie || 'A',
+          tipo: isFin ? 'Financiero' : 'Fisico',
+          tipo_nota: isFin ? 'Financiera' : 'Física',
+          clienteId: String(fullNota.clienteId || fullNota.id_cliente || fullNota.cliente_nombre || ''),
+          vendedorId: String(fullNota.vendedorId || fullNota.id_vendedor || fullNota.id_usuario_creador || 'U01'),
+          sucursalId: String(fullNota.sucursalId || fullNota.id_sucursal || 'S01'),
+          operadorId: String(fullNota.operadorId || fullNota.id_operador || ''),
+          fechaEmision: fullNota.fechaEmision || fullNota.fecha_emision ? String(fullNota.fechaEmision || fullNota.fecha_emision).substring(0, 10) : new Date().toISOString().split('T')[0],
+          fechaAplicacion: fullNota.fechaAplicacion || fullNota.fecha_aplicacion ? String(fullNota.fechaAplicacion || fullNota.fecha_aplicacion).substring(0, 10) : new Date().toISOString().split('T')[0],
+          total: parseFloat(fullNota.total || fullNota.monto_total || fullNota.montoTotal || fullNota.importeDescuento || 0),
+          subtotal: parseFloat(fullNota.subtotal || fullNota.total || 0),
+          estado_operacion: fullNota.estado_operacion || fullNota.estado || 'Activa',
+          estado_autorizacion: fullNota.estado_autorizacion || fullNota.estado || 'Autorizada',
+          estado: (fullNota.estado_operacion === 'Cancelada' || fullNota.estado === 'Cancelada') ? 'Cancelada' : (fullNota.estado_autorizacion || fullNota.estado || 'Autorizada'),
+          firmas: fullNota.firmas || { elaboro: fullNota.id_usuario_creador || null, almacen: null, autorizo: null, cliente: null },
+          productos: Array.isArray(fullNota.productos) ? fullNota.productos : []
+        };
+      });
     }
     if (Array.isArray(sqlData.faltantes)) {
       faltantesPicking = sqlData.faltantes;
@@ -463,6 +494,7 @@ async function fetchAPIData() {
   if (typeof renderCatalogosTables === 'function') renderCatalogosTables();
   if (typeof renderSucursalesTable === 'function') renderSucursalesTable();
   if (typeof renderPresupuestosTable === 'function') renderPresupuestosTable();
+  if (currentView === 'dashboard' && typeof initDashboard === 'function') initDashboard();
   if (typeof renderFaltantesPickingTable === 'function') renderFaltantesPickingTable();
   if (typeof updateDashboard === 'function') updateDashboard();
 }
@@ -662,8 +694,9 @@ function getNotaStates(n) {
 }
 
 function getNotaDisplayState(n) {
+  if (!n) return 'Autorizada';
   const { auth, oper } = getNotaStates(n);
-  if (oper === 'Cancelada') return 'Cancelada';
+  if (oper === 'Cancelada' || n.estado === 'Cancelada' || n.estado_operacion === 'Cancelada') return 'Cancelada';
   return auth;
 }
 
@@ -1501,12 +1534,12 @@ function initDashboard() {
   document.getElementById('dash-total-notas').textContent = notasFiltradas.filter(n => getNotaDisplayState(n) !== 'Cancelada').length;
   
   // Total Notas Físicas
-  const countFisicas = notasFiltradas.filter(n => n.tipo === 'Fisico' && getNotaDisplayState(n) !== 'Cancelada').length;
+  const countFisicas = notasFiltradas.filter(n => isNoteTipoMatch(n, 'Fisico') && getNotaDisplayState(n) !== 'Cancelada').length;
   document.getElementById('dash-total-fisicas').textContent = countFisicas;
 
   // Total financiera acumulada en el periodo
   const totalFin = notasFiltradas
-    .filter(n => n.tipo === 'Financiero' && getNotaDisplayState(n) !== 'Cancelada')
+    .filter(n => isNoteTipoMatch(n, 'Financiero') && getNotaDisplayState(n) !== 'Cancelada')
     .reduce((sum, n) => sum + (n.total || 0), 0);
   document.getElementById('dash-total-financieras').textContent = formatCurrency(totalFin);
 
@@ -2041,7 +2074,7 @@ function renderNotasFisicasList() {
   if (!tbody) return;
   tbody.innerHTML = '';
   
-  let notasFis = notas.filter(n => n.tipo === 'Fisico');
+  let notasFis = notas.filter(n => isNoteTipoMatch(n, 'Fisico'));
 
   // Interacción multilateral: Vendedores y Gerentes ven las notas de su sucursal o creadas por ellos
   if (currentUser.rol === 'Gerente' || currentUser.rol === 'Vendedor') {
@@ -2577,7 +2610,7 @@ function renderNotasFinancierasList() {
   if (!tbody) return;
   tbody.innerHTML = '';
   
-  let notasFin = notas.filter(n => n.tipo === 'Financiero');
+  let notasFin = notas.filter(n => isNoteTipoMatch(n, 'Financiero'));
 
   // Interacción multilateral: Vendedores y Gerentes ven las notas de su sucursal o creadas por ellos
   if (currentUser.rol === 'Gerente' || currentUser.rol === 'Vendedor') {
@@ -3373,6 +3406,7 @@ document.getElementById('btn-cancel-nota-action').addEventListener('click', () =
       notas[idx].estado = 'Cancelada';
       saveData('ca_notas', notas);
       pushToCloudStorage();
+      pushToSQLServer('notas', notas[idx]);
       alert("Nota cancelada con éxito.");
       viewNotaDetail(currentDetailNotaId);
       initDashboard();
@@ -5154,8 +5188,10 @@ function isNoteProveedorMatch(n, targetProvId) {
 
 function isNoteTipoMatch(n, targetTipo) {
   if (!targetTipo) return true;
-  const nTipo = String(n.tipo || n.tipo_nota || '').trim().toLowerCase();
-  const tTipo = String(targetTipo).trim().toLowerCase();
+  const nTipo = String(n.tipo || n.tipo_nota || '').trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const tTipo = String(targetTipo).trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  if (tTipo.includes('fisic')) return nTipo.includes('fisic');
+  if (tTipo.includes('finan')) return nTipo.includes('finan');
   return nTipo === tTipo;
 }
 
