@@ -79,7 +79,7 @@ if ($LASTEXITCODE -eq 0) {
 # Resultado final
 Write-Host ""
 Write-Host "  ============================================" -ForegroundColor Green
-Write-Host "  |         SISTEMA LISTO                    |" -ForegroundColor Green
+Write-Host "  |   SISTEMA ACTIVO Y MONITOREADO 24/7      |" -ForegroundColor Green
 Write-Host "  ============================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Tunel activo:  $TunnelURL" -ForegroundColor Cyan
@@ -88,8 +88,41 @@ Write-Host ""
 Write-Host "  Todos los dispositivos (celular, tablet, otra PC)" -ForegroundColor White
 Write-Host "  veran los datos de SQL Server en tiempo real." -ForegroundColor White
 Write-Host ""
-Write-Host "  Esta ventana puede cerrarse." -ForegroundColor DarkGray
-Write-Host "  El servidor y el tunel corren en sus propias ventanas." -ForegroundColor DarkGray
+Write-Host "  [AUTORECUPERACIÓN ACTIVA] Si la laptop entra en reposo y despierta," -ForegroundColor Yellow
+Write-Host "  esta ventana detectará la caída, reconectará el túnel y lo publicará a GitHub." -ForegroundColor Yellow
 Write-Host ""
 
-Read-Host "  Presiona Enter para cerrar"
+# Bucle 24/7 Keep-Alive & Auto-Recuperación tras reposo
+while ($true) {
+    Start-Sleep -Seconds 15
+    $cfProc = Get-Process -Name "cloudflared" -ErrorAction SilentlyContinue
+    if (-not $cfProc) {
+        Write-Host "  [ALERTA $(Get-Date -Format 'HH:mm:ss')] Túnel caído (despertar de reposo). Reconectando..." -ForegroundColor Yellow
+        
+        if (Test-Path $TunnelLog) { Remove-Item $TunnelLog -Force }
+        $TunnelProcess = Start-Process -FilePath $CloudflaredExe -ArgumentList "tunnel --url http://localhost:3000" -WorkingDirectory $ProjectDir -RedirectStandardError $TunnelLog -WindowStyle Hidden -PassThru
+        
+        $TunnelURL = $null
+        $Timeout = 40
+        $Elapsed = 0
+        while (-not $TunnelURL -and $Elapsed -lt $Timeout) {
+            Start-Sleep -Seconds 2
+            $Elapsed += 2
+            if (Test-Path $TunnelLog) {
+                $LogContent = Get-Content $TunnelLog -Raw -ErrorAction SilentlyContinue
+                if ($LogContent -match 'https://([a-z0-9\-]+\.trycloudflare\.com)') {
+                    $TunnelURL = "https://" + $Matches[1]
+                }
+            }
+        }
+        
+        if ($TunnelURL) {
+            $TunnelJson = "{""url"":""$TunnelURL"",""updated"":""$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')""}"
+            [System.IO.File]::WriteAllText($TunnelJsonPath, $TunnelJson, [System.Text.Encoding]::UTF8)
+            git add current_tunnel.json 2>&1 | Out-Null
+            git commit -m "auto: keep-alive reconnect tunnel -> $TunnelURL" 2>&1 | Out-Null
+            git push origin main 2>&1 | Out-Null
+            Write-Host "  [RECONECTADO $(Get-Date -Format 'HH:mm:ss')] Nuevo túnel publicado: $TunnelURL" -ForegroundColor Green
+        }
+    }
+}

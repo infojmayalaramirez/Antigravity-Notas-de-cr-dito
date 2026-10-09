@@ -42,6 +42,32 @@ app.use((req, res, next) => {
     next();
 });
 
+// Endpoint de Ping / Keep-Alive 24/7
+app.get('/api/ping', (req, res) => {
+    res.json({ status: 'ok', uptime: process.uptime(), time: new Date().toISOString() });
+});
+
+// Loop Keep-Alive local e impulsado por HTTPS para prevenir que Cloudflare cierre el túnel por reposo/inactividad
+const https = require('https');
+const fs = require('fs');
+
+setInterval(() => {
+    try {
+        const tunnelJsonPath = path.join(__dirname, 'current_tunnel.json');
+        if (fs.existsSync(tunnelJsonPath)) {
+            const data = JSON.parse(fs.readFileSync(tunnelJsonPath, 'utf8'));
+            if (data && data.url) {
+                const pingUrl = `${data.url}/api/ping?t=${Date.now()}`;
+                https.get(pingUrl, (res) => {
+                    // Túnel activo
+                }).on('error', (e) => {
+                    console.warn('[KeepAlive] Reconectando túnel:', e.message);
+                });
+            }
+        }
+    } catch(e) {}
+}, 25000);
+
 // =====================================================================
 // SETUP DE ESQUEMA SQL SERVER
 // =====================================================================

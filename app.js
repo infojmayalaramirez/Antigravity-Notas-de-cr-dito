@@ -156,13 +156,20 @@ async function fetchFromSQLServer() {
       cache: 'no-store',
       headers: { 'Accept': 'application/json' }
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      if (!IS_SAME_ORIGIN) resolveServerURL();
+      return null;
+    }
     const contentType = res.headers.get('content-type') || '';
-    if (!contentType.includes('application/json')) return null;
+    if (!contentType.includes('application/json')) {
+      if (!IS_SAME_ORIGIN) resolveServerURL();
+      return null;
+    }
     const data = await res.json();
     return data;
   } catch (e) {
     console.warn('[SQL Tunnel] No accesible:', e.message);
+    if (!IS_SAME_ORIGIN) resolveServerURL();
     return null;
   }
 }
@@ -465,9 +472,10 @@ async function fetchAPIData() {
     }
     updateSyncStatusUI('🟢 SQL Server Conectado', true);
   } else {
-    // Sin conexión al túnel: mostrar advertencia
+    // Sin conexión al túnel: mostrar advertencia y re-intentar resolución de URL desde GitHub
     updateSyncStatusUI('🔴 Sin conexión a SQL Server', false);
-    console.warn('[fetchAPIData] Túnel no disponible. Usando catálogos base de respaldo.');
+    console.warn('[fetchAPIData] Túnel no disponible. Re-buscando URL activa en GitHub...');
+    if (!IS_SAME_ORIGIN) resolveServerURL();
     if (!Array.isArray(sucursales) || sucursales.length === 0) {
       sucursales = DEFAULT_SUCURSALES_MAESTRAS;
     }
