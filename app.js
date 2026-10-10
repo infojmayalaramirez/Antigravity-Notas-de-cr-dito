@@ -51,34 +51,18 @@ function ensureAllSqlUsersExist(localUsers) {
 }
 
 function ensureAllSqlClientsExist(localClients) {
-  const clientMap = new Map();
-  DEFAULT_CLIENTES_FALLBACK.forEach(c => {
-    if (c && (c.id || c.codigo || c.nombre)) {
-      clientMap.set(String(c.id || c.codigo || c.nombre), {
-        id: c.id,
-        codigoInterno: c.codigo || c.codigoInterno || c.id,
+  if (Array.isArray(localClients) && localClients.length > 0) {
+    return localClients
+      .filter(c => !c.eliminado)
+      .map(c => ({
+        id: c.id || c.id_cliente || c.codigo || c.codigoInterno,
+        codigoInterno: c.codigoInterno || c.codigo_interno || c.codigo || c.id,
         nombre: c.nombre,
-        tieneDerechoDescuento: c.derechoDescuento !== undefined ? c.derechoDescuento : true,
+        tieneDerechoDescuento: c.tieneDerechoDescuento !== undefined ? c.tieneDerechoDescuento : (c.tiene_derecho_descuento !== undefined ? c.tiene_derecho_descuento : true),
         eliminado: false
-      });
-    }
-  });
-  (localClients || []).forEach(c => {
-    if (c && (c.id || c.id_cliente || c.codigo || c.codigo_interno || c.codigoInterno || c.nombre)) {
-      const idVal = String(c.id || c.id_cliente || c.codigo || c.codigo_interno || c.codigoInterno || c.nombre);
-      const prev = clientMap.get(idVal) || {};
-      clientMap.set(idVal, {
-        ...prev,
-        ...c,
-        id: c.id || c.id_cliente || prev.id || idVal,
-        codigoInterno: c.codigoInterno || c.codigo_interno || c.codigo || prev.codigoInterno || idVal,
-        nombre: c.nombre || prev.nombre || idVal,
-        tieneDerechoDescuento: c.tieneDerechoDescuento !== undefined ? c.tieneDerechoDescuento : (c.tiene_derecho_descuento !== undefined ? c.tiene_derecho_descuento : (prev.tieneDerechoDescuento !== undefined ? prev.tieneDerechoDescuento : true)),
-        eliminado: c.eliminado || false
-      });
-    }
-  });
-  return Array.from(clientMap.values());
+      }));
+  }
+  return [];
 }
 
 const DEFAULT_SUCURSALES_MAESTRAS = [
@@ -92,7 +76,7 @@ const DEFAULT_SUCURSALES_MAESTRAS = [
 // Los datos se obtienen en el primer fetchAPIData() que se ejecuta inmediatamente al cargar.
 let usuarios = [];
 let sucursales = DEFAULT_SUCURSALES_MAESTRAS;
-let clientes = ensureAllSqlClientsExist([]);
+let clientes = [];
 let operadores = [];
 let vendedores = [];
 let presupuestos = [];
@@ -185,6 +169,31 @@ async function pushToSQLServer(entity, item) {
       body: JSON.stringify(item)
     });
   } catch (e) {}
+}
+
+// Función para eliminar registros de SQL Server via túnel con auto-reintento
+async function deleteFromSQLServer(entity, id) {
+  if (!SQL_TUNNEL_BASE) await resolveServerURL();
+
+  async function tryDelete(baseUrl) {
+    const res = await fetch(`${baseUrl}/api/${entity}/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { 'Accept': 'application/json' }
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  try {
+    return await tryDelete(SQL_TUNNEL_BASE);
+  } catch (err) {
+    console.warn(`[deleteFromSQLServer] Reintentando borrado tras actualizar URL del túnel...`);
+    if (!IS_SAME_ORIGIN) {
+      await resolveServerURL();
+      return await tryDelete(SQL_TUNNEL_BASE);
+    }
+    throw err;
+  }
 }
 
 // Arrancar resolución de URL inmediatamente (asíncrono)
@@ -4313,11 +4322,15 @@ window.removeCliente = async function(id) {
     return;
   }
   if (confirm('¿Estás seguro de eliminar este cliente?')) {
+    // Optimistic UI: quitarlo de la pantalla de inmediato
+    clientes = clientes.filter(c => String(c.id) !== String(id) && String(c.codigoInterno) !== String(id) && String(c.codigo) !== String(id));
+    renderCatalogosTables();
     try {
-      await fetch(`${SQL_TUNNEL_BASE}/api/clientes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await deleteFromSQLServer('clientes', id);
       await fetchAPIData();
     } catch (e) {
-      alert('Error al eliminar. Verifique el túnel Cloudflare.');
+      console.warn('[removeCliente] Error sincronizando borrado con SQL Server:', e);
+      await fetchAPIData();
     }
   }
 };
@@ -4328,11 +4341,14 @@ window.removeOperador = async function(id) {
     return;
   }
   if (confirm('¿Estás seguro de eliminar este operador?')) {
+    operadores = operadores.filter(o => String(o.id) !== String(id));
+    renderCatalogosTables();
     try {
-      await fetch(`${SQL_TUNNEL_BASE}/api/operadores/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await deleteFromSQLServer('operadores', id);
       await fetchAPIData();
     } catch (e) {
-      alert('Error al eliminar. Verifique el túnel Cloudflare.');
+      console.warn('[removeOperador] Error sincronizando borrado con SQL Server:', e);
+      await fetchAPIData();
     }
   }
 };
@@ -4343,11 +4359,14 @@ window.removeVendedor = async function(id) {
     return;
   }
   if (confirm('¿Estás seguro de eliminar este vendedor?')) {
+    vendedores = vendedores.filter(v => String(v.id) !== String(id));
+    renderCatalogosTables();
     try {
-      await fetch(`${SQL_TUNNEL_BASE}/api/vendedores/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await deleteFromSQLServer('vendedores', id);
       await fetchAPIData();
     } catch (e) {
-      alert('Error al eliminar. Verifique el túnel Cloudflare.');
+      console.warn('[removeVendedor] Error sincronizando borrado con SQL Server:', e);
+      await fetchAPIData();
     }
   }
 };
@@ -4358,37 +4377,42 @@ window.removeProveedor = async function(id) {
     return;
   }
   if (confirm('¿Estás seguro de eliminar este proveedor?')) {
+    proveedores = proveedores.filter(p => String(p.id) !== String(id));
+    renderCatalogosTables();
     try {
-      await fetch(`${SQL_TUNNEL_BASE}/api/proveedores/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await deleteFromSQLServer('proveedores', id);
       await fetchAPIData();
     } catch (e) {
-      alert('Error al eliminar. Verifique el túnel Cloudflare.');
+      console.warn('[removeProveedor] Error sincronizando borrado con SQL Server:', e);
+      await fetchAPIData();
     }
   }
 };
 
-window.clearCatalogosData = function() {
+window.clearCatalogosData = async function() {
   if (!currentUser || (currentUser.rol !== 'Administrador' && currentUser.rol !== 'Gerente')) {
     alert("Solo el Administrador o el Gerente pueden limpiar los catálogos.");
     return;
   }
   
-  if (confirm("¿Estás seguro de borrar los catálogos de prueba? Esta acción limpiará los registros para que queden únicamente los que tú des de alta desde cero.\n\n(Se conservará tu usuario Administrador actual para no perder el acceso al sistema).")) {
-    usuarios = usuarios.filter(u => u.id === activeUserId || u.rol === 'Administrador');
+  if (confirm("¿Estás seguro de borrar los catálogos de prueba? Esta acción limpiará los registros en SQL Server para que queden únicamente los que tú des de alta desde cero.\n\n(Se conservará tu usuario Administrador actual para no perder el acceso al sistema).")) {
     clientes = [];
     operadores = [];
     vendedores = [];
     proveedores = [];
 
-    saveData('ca_clientes', clientes);
-    saveData('ca_operadores', operadores);
-    saveData('ca_vendedores', vendedores);
-    saveData('ca_proveedores', proveedores);
-
-    alert("Catálogos limpiados con éxito. Ahora puedes dar de alta únicamente los registros reales de tu empresa.");
     renderCatalogosTables();
-    renderUsuariosTable();
     refreshAllModuleDropdowns();
+
+    try {
+      if (!SQL_TUNNEL_BASE) await resolveServerURL();
+      await fetch(`${SQL_TUNNEL_BASE}/api/catalogos/limpiar`, { method: 'POST' });
+      await fetchAPIData();
+      alert("Catálogos limpiados con éxito en SQL Server.");
+    } catch (e) {
+      console.warn('[clearCatalogosData] Falló POST a SQL Server:', e);
+      alert("Catálogos limpiados localmente.");
+    }
   }
 };
 

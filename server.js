@@ -47,6 +47,14 @@ app.get('/api/ping', (req, res) => {
     res.json({ status: 'ok', uptime: process.uptime(), time: new Date().toISOString() });
 });
 
+// Prevenir modo de suspensión/reposo en Windows mientras el servidor esté activo
+const { exec } = require('child_process');
+try {
+    exec('powercfg /change standby-timeout-ac 0 && powercfg /change standby-timeout-dc 0 && powercfg /change hibernate-timeout-ac 0 && powercfg /change hibernate-timeout-dc 0', (err) => {
+        if (!err) console.log('[PowerConfig] ✅ Windows configurado para NUNCA entrar en reposo/suspensión.');
+    });
+} catch(e) {}
+
 // Loop Keep-Alive local e impulsado por HTTPS para prevenir que Cloudflare cierre el túnel por reposo/inactividad
 const https = require('https');
 const fs = require('fs');
@@ -464,12 +472,15 @@ app.post('/api/clientes', async (req, res) => {
 
 app.delete('/api/clientes/:id', async (req, res) => {
     try {
+        const id = String(req.params.id || '').trim();
         const pool = await getPool();
         await pool.request()
-            .input('id', sql.VarChar, req.params.id)
-            .query('UPDATE dbo.Clientes SET eliminado=1 WHERE id_cliente=@id');
-        res.json({ success: true });
+            .input('id', sql.VarChar, id)
+            .query('UPDATE dbo.Clientes SET eliminado=1 WHERE id_cliente=@id OR codigo_interno=@id');
+        console.log(`[DELETE /api/clientes] Cliente '${id}' marcado como eliminado en SQL Server.`);
+        res.json({ success: true, deleted: id });
     } catch (error) {
+        console.error('[DELETE /api/clientes/:id]', error.message);
         res.status(500).json({ error: error.message });
     }
 });
@@ -664,6 +675,24 @@ app.delete('/api/proveedores/:id', async (req, res) => {
             .query('UPDATE dbo.Proveedores SET eliminado=1 WHERE id_proveedor=@id');
         res.json({ success: true });
     } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Limpiar catálogos de prueba en SQL Server
+app.post('/api/catalogos/limpiar', async (req, res) => {
+    try {
+        const pool = await getPool();
+        await pool.request().query(`
+            UPDATE dbo.Clientes SET eliminado=1;
+            UPDATE dbo.Operadores SET eliminado=1;
+            UPDATE dbo.Vendedores SET eliminado=1;
+            UPDATE dbo.Proveedores SET eliminado=1;
+        `);
+        console.log('[POST /api/catalogos/limpiar] Catálogos limpiados en SQL Server.');
+        res.json({ success: true, message: 'Catálogos limpiados con éxito en SQL Server' });
+    } catch (error) {
+        console.error('[POST /api/catalogos/limpiar]', error.message);
         res.status(500).json({ error: error.message });
     }
 });
