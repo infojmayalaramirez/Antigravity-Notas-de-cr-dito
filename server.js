@@ -55,26 +55,143 @@ try {
     });
 } catch(e) {}
 
-// Loop Keep-Alive local e impulsado por HTTPS para prevenir que Cloudflare cierre el túnel por reposo/inactividad
+// =====================================================================
+// SUPERVISOR AUTÓNOMO DE TÚNEL CLOUDFLARE 24/7 (AUTO-RECUPERACIÓN TOTAL)
+// =====================================================================
 const https = require('https');
 const fs = require('fs');
+const { spawn } = require('child_process');
 
-setInterval(() => {
-    try {
-        const tunnelJsonPath = path.join(__dirname, 'current_tunnel.json');
-        if (fs.existsSync(tunnelJsonPath)) {
-            const data = JSON.parse(fs.readFileSync(tunnelJsonPath, 'utf8'));
-            if (data && data.url) {
-                const pingUrl = `${data.url}/api/ping?t=${Date.now()}`;
-                https.get(pingUrl, (res) => {
-                    // Túnel activo
-                }).on('error', (e) => {
-                    console.warn('[KeepAlive] Reconectando túnel:', e.message);
+let cfProcess = null;
+let activeTunnelUrl = null;
+let pingFailureCount = 0;
+let isRestartingTunnel = false;
+
+function launchTunnel() {
+    if (isRestartingTunnel) return;
+    isRestartingTunnel = true;
+
+    if (cfProcess) {
+        try {
+            cfProcess.kill('SIGKILL');
+        } catch(e) {}
+        cfProcess = null;
+    }
+
+    const cfExePath = path.join(__dirname, 'cloudflared.exe');
+    if (!fs.existsSync(cfExePath)) {
+        console.warn('[Cloudflare] No se encontró cloudflared.exe en:', cfExePath);
+        isRestartingTunnel = false;
+        return;
+    }
+
+    console.log('[Cloudflare] 🌐 Levantando túnel seguro hacia http://127.0.0.1:3000...');
+    const child = spawn(cfExePath, ['tunnel', '--url', 'http://127.0.0.1:3000'], {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    cfProcess = child;
+    isRestartingTunnel = false;
+
+    const onData = (chunk) => {
+        const text = chunk.toString();
+
+        // 1. Detectar URL del túnel
+        const match = text.match(/https:\/\/([a-z0-9\-]+\.trycloudflare\.com)/);
+        if (match) {
+            const freshUrl = match[0];
+            if (freshUrl !== activeTunnelUrl) {
+                activeTunnelUrl = freshUrl;
+                pingFailureCount = 0;
+                console.log(`\n========================================================`);
+                console.log(`[Cloudflare] ✅ TÚNEL ONLINE Y VERIFICADO: ${freshUrl}`);
+                console.log(`========================================================\n`);
+
+                const tunnelJsonPath = path.join(__dirname, 'current_tunnel.json');
+                const content = JSON.stringify({
+                    url: freshUrl,
+                    updated: new Date().toISOString()
+                });
+                fs.writeFileSync(tunnelJsonPath, content, 'utf8');
+
+                // Sincronizar con GitHub inmediatamente
+                exec('git add current_tunnel.json && git commit -m "auto: live tunnel -> ' + freshUrl + '" && git push origin main', (err) => {
+                    if (!err) {
+                        console.log('[Cloudflare] 🚀 Nueva URL publicada en GitHub con éxito.');
+                    } else {
+                        console.warn('[Cloudflare] Aviso sincronización git:', err.message);
+                    }
                 });
             }
         }
-    } catch(e) {}
-}, 25000);
+
+        // 2. Detectar desconexión de sesión de Cloudflare
+        if (text.includes('Unauthorized: Tunnel not found') || text.includes('timeout: no recent network activity')) {
+            console.warn('[Cloudflare] ⚠️ Sesión de túnel expirada por Cloudflare. Reiniciando de inmediato...');
+            restartTunnel();
+        }
+    };
+
+    child.stdout.on('data', onData);
+    child.stderr.on('data', onData);
+
+    child.on('close', (code) => {
+        console.warn(`[Cloudflare] Proceso de túnel finalizado (código ${code}). Reiniciando en 3s...`);
+        cfProcess = null;
+        setTimeout(launchTunnel, 3000);
+    });
+
+    child.on('error', (err) => {
+        console.error('[Cloudflare] Error ejecutando cloudflared:', err.message);
+        setTimeout(launchTunnel, 5000);
+    });
+}
+
+function restartTunnel() {
+    if (cfProcess) {
+        try { cfProcess.kill('SIGKILL'); } catch(e) {}
+        cfProcess = null;
+    }
+    setTimeout(launchTunnel, 2000);
+}
+
+// Watchdog 24/7 en Node.js: Ping cada 15 segundos al túnel público
+setInterval(() => {
+    if (!activeTunnelUrl) return;
+
+    const pingUrl = `${activeTunnelUrl}/api/ping?t=${Date.now()}`;
+    const req = https.get(pingUrl, { timeout: 7000 }, (res) => {
+        if (res.statusCode === 200) {
+            pingFailureCount = 0;
+        } else {
+            pingFailureCount++;
+            handlePingFailure();
+        }
+    });
+
+    req.on('error', () => {
+        pingFailureCount++;
+        handlePingFailure();
+    });
+
+    req.on('timeout', () => {
+        req.destroy();
+        pingFailureCount++;
+        handlePingFailure();
+    });
+}, 15000);
+
+function handlePingFailure() {
+    if (pingFailureCount >= 2) {
+        console.warn(`[Watchdog 24/7] ⚠️ El túnel no responde (${pingFailureCount} intentos fallidos). Reiniciando túnel automáticamente...`);
+        pingFailureCount = 0;
+        restartTunnel();
+    }
+}
+
+// Iniciar el túnel automáticamente al arrancar Node.js
+setTimeout(launchTunnel, 2000);
 
 // =====================================================================
 // SETUP DE ESQUEMA SQL SERVER

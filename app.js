@@ -113,23 +113,51 @@ async function resolveServerURL() {
     console.log('[SQL] Modo directo:', SQL_TUNNEL_BASE);
     return;
   }
-  // Corremos desde Netlify — descargar URL actual del túnel desde GitHub
+
+  // 1. Intentar GitHub API directa (bypassea la caché de Fastly CDN de GitHub)
+  try {
+    const apiRes = await fetch('https://api.github.com/repos/infojmayalaramirez/Antigravity-Notas-de-cr-dito/contents/current_tunnel.json?t=' + Date.now(), {
+      headers: { 'Accept': 'application/vnd.github.v3+json' },
+      cache: 'no-store'
+    });
+    if (apiRes.ok) {
+      const apiData = await apiRes.json();
+      if (apiData && apiData.content) {
+        const decoded = JSON.parse(atob(apiData.content.replace(/\s/g, '')));
+        if (decoded && decoded.url) {
+          SQL_TUNNEL_BASE = decoded.url;
+          localStorage.setItem('ca_last_active_tunnel', SQL_TUNNEL_BASE);
+          console.log('[SQL] URL fresca desde GitHub API:', SQL_TUNNEL_BASE, '(actualizado:', decoded.updated, ')');
+          return;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[SQL] GitHub API no disponible, intentando raw:', e.message);
+  }
+
+  // 2. Intentar raw.githubusercontent.com con cache-buster
   try {
     const r = await fetch(GITHUB_TUNNEL_FILE + '?t=' + Date.now(), { cache: 'no-store' });
     if (r.ok) {
       const data = await r.json();
       if (data && data.url) {
         SQL_TUNNEL_BASE = data.url;
-        console.log('[SQL] URL del túnel desde GitHub:', SQL_TUNNEL_BASE, '(actualizado:', data.updated, ')');
+        localStorage.setItem('ca_last_active_tunnel', SQL_TUNNEL_BASE);
+        console.log('[SQL] URL del túnel desde GitHub Raw:', SQL_TUNNEL_BASE);
         return;
       }
     }
   } catch (e) {
-    console.warn('[SQL] No se pudo leer la URL del túnel desde GitHub:', e.message);
+    console.warn('[SQL] Error leyendo raw GitHub:', e.message);
   }
-  // Fallback: intentar con la última URL conocida
-  SQL_TUNNEL_BASE = 'https://savings-experts-explosion-interesting.trycloudflare.com';
-  console.warn('[SQL] Usando URL de respaldo:', SQL_TUNNEL_BASE);
+
+  // 3. Fallback: usar el último túnel activo recordado en el dispositivo
+  const cached = localStorage.getItem('ca_last_active_tunnel');
+  if (cached) {
+    SQL_TUNNEL_BASE = cached;
+    console.log('[SQL] Usando última URL conocida guardada en dispositivo:', SQL_TUNNEL_BASE);
+  }
 }
 
 // Función principal: obtiene TODOS los datos reales del SQL Server via túnel
