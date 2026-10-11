@@ -58,110 +58,121 @@ try {
 // =====================================================================
 // SUPERVISOR AUTÓNOMO DE TÚNEL CLOUDFLARE 24/7 (AUTO-RECUPERACIÓN TOTAL)
 // =====================================================================
+// SUPERVISOR AUTÓNOMO DE TÚNEL CLOUDFLARE 24/7 (CERO FUGAS DE PROCESOS)
+// =====================================================================
 const https = require('https');
 const fs = require('fs');
-const { spawn } = require('child_process');
+const { spawn, exec } = require('child_process');
 
 let cfProcess = null;
 let activeTunnelUrl = null;
 let pingFailureCount = 0;
-let isRestartingTunnel = false;
+let isStartingTunnel = false;
+let isGitPushing = false;
+
+// Mata de forma garantizada todos los procesos de cloudflared en Windows
+function killAllCloudflared(callback) {
+    exec('taskkill /F /IM cloudflared.exe', () => {
+        cfProcess = null;
+        if (typeof callback === 'function') callback();
+    });
+}
 
 function launchTunnel() {
-    if (isRestartingTunnel) return;
-    isRestartingTunnel = true;
+    if (isStartingTunnel) return;
+    isStartingTunnel = true;
 
-    if (cfProcess) {
-        try {
-            cfProcess.kill('SIGKILL');
-        } catch(e) {}
-        cfProcess = null;
-    }
+    // Asegurar que no quede ningún proceso previo antes de arrancar
+    killAllCloudflared(() => {
+        const cfExePath = path.join(__dirname, 'cloudflared.exe');
+        if (!fs.existsSync(cfExePath)) {
+            console.warn('[Cloudflare] No se encontró cloudflared.exe en:', cfExePath);
+            isStartingTunnel = false;
+            return;
+        }
 
-    const cfExePath = path.join(__dirname, 'cloudflared.exe');
-    if (!fs.existsSync(cfExePath)) {
-        console.warn('[Cloudflare] No se encontró cloudflared.exe en:', cfExePath);
-        isRestartingTunnel = false;
-        return;
-    }
+        console.log('[Cloudflare] 🌐 Levantando túnel seguro hacia http://127.0.0.1:3000...');
+        const child = spawn(cfExePath, ['tunnel', '--url', 'http://127.0.0.1:3000'], {
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
 
-    console.log('[Cloudflare] 🌐 Levantando túnel seguro hacia http://127.0.0.1:3000...');
-    const child = spawn(cfExePath, ['tunnel', '--url', 'http://127.0.0.1:3000'], {
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe']
-    });
+        cfProcess = child;
+        isStartingTunnel = false;
 
-    cfProcess = child;
-    isRestartingTunnel = false;
+        const onData = (chunk) => {
+            const text = chunk.toString();
 
-    const onData = (chunk) => {
-        const text = chunk.toString();
+            // 1. Detectar URL del túnel
+            const match = text.match(/https:\/\/([a-z0-9\-]+\.trycloudflare\.com)/);
+            if (match) {
+                const freshUrl = match[0];
+                if (freshUrl !== activeTunnelUrl) {
+                    activeTunnelUrl = freshUrl;
+                    pingFailureCount = 0;
+                    console.log(`\n========================================================`);
+                    console.log(`[Cloudflare] ✅ TÚNEL ONLINE Y VERIFICADO: ${freshUrl}`);
+                    console.log(`========================================================\n`);
 
-        // 1. Detectar URL del túnel
-        const match = text.match(/https:\/\/([a-z0-9\-]+\.trycloudflare\.com)/);
-        if (match) {
-            const freshUrl = match[0];
-            if (freshUrl !== activeTunnelUrl) {
-                activeTunnelUrl = freshUrl;
-                pingFailureCount = 0;
-                console.log(`\n========================================================`);
-                console.log(`[Cloudflare] ✅ TÚNEL ONLINE Y VERIFICADO: ${freshUrl}`);
-                console.log(`========================================================\n`);
+                    const tunnelJsonPath = path.join(__dirname, 'current_tunnel.json');
+                    const content = JSON.stringify({
+                        url: freshUrl,
+                        updated: new Date().toISOString()
+                    });
+                    fs.writeFileSync(tunnelJsonPath, content, 'utf8');
 
-                const tunnelJsonPath = path.join(__dirname, 'current_tunnel.json');
-                const content = JSON.stringify({
-                    url: freshUrl,
-                    updated: new Date().toISOString()
-                });
-                fs.writeFileSync(tunnelJsonPath, content, 'utf8');
-
-                // Sincronizar con GitHub inmediatamente
-                exec('git add current_tunnel.json && git commit -m "auto: live tunnel -> ' + freshUrl + '" && git push origin main', (err) => {
-                    if (!err) {
-                        console.log('[Cloudflare] 🚀 Nueva URL publicada en GitHub con éxito.');
-                    } else {
-                        console.warn('[Cloudflare] Aviso sincronización git:', err.message);
+                    // Sincronizar con GitHub de forma serializada (sin colisiones)
+                    if (!isGitPushing) {
+                        isGitPushing = true;
+                        exec('git add current_tunnel.json && git commit -m "auto: live tunnel -> ' + freshUrl + '" && git push origin main', (err) => {
+                            isGitPushing = false;
+                            if (!err) {
+                                console.log('[Cloudflare] 🚀 Nueva URL publicada en GitHub con éxito.');
+                            } else {
+                                console.warn('[Cloudflare] Aviso sincronización git:', err.message);
+                            }
+                        });
                     }
-                });
+                }
             }
-        }
 
-        // 2. Detectar desconexión de sesión de Cloudflare
-        if (text.includes('Unauthorized: Tunnel not found') || text.includes('timeout: no recent network activity')) {
-            console.warn('[Cloudflare] ⚠️ Sesión de túnel expirada por Cloudflare. Reiniciando de inmediato...');
-            restartTunnel();
-        }
-    };
+            // 2. Detectar desconexión crítica de Cloudflare
+            if (text.includes('Unauthorized: Tunnel not found')) {
+                console.warn('[Cloudflare] ⚠️ Sesión no autorizada. Reiniciando túnel...');
+                restartTunnel();
+            }
+        };
 
-    child.stdout.on('data', onData);
-    child.stderr.on('data', onData);
+        child.stdout.on('data', onData);
+        child.stderr.on('data', onData);
 
-    child.on('close', (code) => {
-        console.warn(`[Cloudflare] Proceso de túnel finalizado (código ${code}). Reiniciando en 3s...`);
-        cfProcess = null;
-        setTimeout(launchTunnel, 3000);
-    });
+        child.on('close', (code) => {
+            console.warn(`[Cloudflare] Proceso de túnel finalizado (código ${code}). Reiniciando en 5s...`);
+            cfProcess = null;
+            setTimeout(launchTunnel, 5000);
+        });
 
-    child.on('error', (err) => {
-        console.error('[Cloudflare] Error ejecutando cloudflared:', err.message);
-        setTimeout(launchTunnel, 5000);
+        child.on('error', (err) => {
+            console.error('[Cloudflare] Error ejecutando cloudflared:', err.message);
+            cfProcess = null;
+            setTimeout(launchTunnel, 7000);
+        });
     });
 }
 
 function restartTunnel() {
-    if (cfProcess) {
-        try { cfProcess.kill('SIGKILL'); } catch(e) {}
-        cfProcess = null;
-    }
-    setTimeout(launchTunnel, 2000);
+    killAllCloudflared(() => {
+        setTimeout(launchTunnel, 3000);
+    });
 }
 
-// Watchdog 24/7 en Node.js: Ping cada 15 segundos al túnel público
+// Watchdog prudente: Ping cada 45 segundos al túnel público
+// Requiere 3 fallas consecutivas para evitar falsos positivos
 setInterval(() => {
-    if (!activeTunnelUrl) return;
+    if (!activeTunnelUrl || isStartingTunnel) return;
 
     const pingUrl = `${activeTunnelUrl}/api/ping?t=${Date.now()}`;
-    const req = https.get(pingUrl, { timeout: 7000 }, (res) => {
+    const req = https.get(pingUrl, { timeout: 12000 }, (res) => {
         if (res.statusCode === 200) {
             pingFailureCount = 0;
         } else {
@@ -180,15 +191,20 @@ setInterval(() => {
         pingFailureCount++;
         handlePingFailure();
     });
-}, 15000);
+}, 45000);
 
 function handlePingFailure() {
-    if (pingFailureCount >= 2) {
-        console.warn(`[Watchdog 24/7] ⚠️ El túnel no responde (${pingFailureCount} intentos fallidos). Reiniciando túnel automáticamente...`);
+    if (pingFailureCount >= 3) {
+        console.warn(`[Watchdog] ⚠️ El túnel no responde tras ${pingFailureCount} intentos. Reiniciando de forma limpia...`);
         pingFailureCount = 0;
         restartTunnel();
     }
 }
+
+// Limpiar procesos al cerrar Node.js
+process.on('exit', () => killAllCloudflared());
+process.on('SIGINT', () => { killAllCloudflared(); process.exit(); });
+process.on('SIGTERM', () => { killAllCloudflared(); process.exit(); });
 
 // Iniciar el túnel automáticamente al arrancar Node.js
 setTimeout(launchTunnel, 2000);

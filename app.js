@@ -114,12 +114,16 @@ async function resolveServerURL() {
     return;
   }
 
-  // 1. Intentar GitHub API directa (bypassea la caché de Fastly CDN de GitHub)
+  // 1. Intentar GitHub API directa con timeout de 3 segundos
   try {
+    const apiCtrl = new AbortController();
+    const apiTimer = setTimeout(() => apiCtrl.abort(), 3000);
     const apiRes = await fetch('https://api.github.com/repos/infojmayalaramirez/Antigravity-Notas-de-cr-dito/contents/current_tunnel.json?t=' + Date.now(), {
       headers: { 'Accept': 'application/vnd.github.v3+json' },
-      cache: 'no-store'
+      cache: 'no-store',
+      signal: apiCtrl.signal
     });
+    clearTimeout(apiTimer);
     if (apiRes.ok) {
       const apiData = await apiRes.json();
       if (apiData && apiData.content) {
@@ -133,12 +137,15 @@ async function resolveServerURL() {
       }
     }
   } catch (e) {
-    console.warn('[SQL] GitHub API no disponible, intentando raw:', e.message);
+    console.warn('[SQL] GitHub API no disponible o timeout:', e.message);
   }
 
-  // 2. Intentar raw.githubusercontent.com con cache-buster
+  // 2. Intentar raw.githubusercontent.com con cache-buster y timeout de 3s
   try {
-    const r = await fetch(GITHUB_TUNNEL_FILE + '?t=' + Date.now(), { cache: 'no-store' });
+    const rawCtrl = new AbortController();
+    const rawTimer = setTimeout(() => rawCtrl.abort(), 3000);
+    const r = await fetch(GITHUB_TUNNEL_FILE + '?t=' + Date.now(), { cache: 'no-store', signal: rawCtrl.signal });
+    clearTimeout(rawTimer);
     if (r.ok) {
       const data = await r.json();
       if (data && data.url) {
@@ -160,14 +167,19 @@ async function resolveServerURL() {
   }
 }
 
-// Función principal: obtiene TODOS los datos reales del SQL Server via túnel
+// Función principal: obtiene TODOS los datos reales del SQL Server via túnel con timeout estricto de 4s
 async function fetchFromSQLServer() {
   if (!SQL_TUNNEL_BASE) await resolveServerURL();
+  if (!SQL_TUNNEL_BASE) return null;
   try {
+    const fetchCtrl = new AbortController();
+    const fetchTimer = setTimeout(() => fetchCtrl.abort(), 4000);
     const res = await fetch(`${SQL_TUNNEL_BASE}/api/catalogos/all`, {
       cache: 'no-store',
-      headers: { 'Accept': 'application/json' }
+      headers: { 'Accept': 'application/json' },
+      signal: fetchCtrl.signal
     });
+    clearTimeout(fetchTimer);
     if (!res.ok) {
       if (!IS_SAME_ORIGIN) resolveServerURL();
       return null;
@@ -180,7 +192,7 @@ async function fetchFromSQLServer() {
     const data = await res.json();
     return data;
   } catch (e) {
-    console.warn('[SQL Tunnel] No accesible:', e.message);
+    console.warn('[SQL Tunnel] No accesible o timeout:', e.message);
     if (!IS_SAME_ORIGIN) resolveServerURL();
     return null;
   }
@@ -936,10 +948,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupDashboardPeriodFilters();
   setupLotesPrintView();
 
-  // Cargar datos de la API y luego verificar sesión
-  await fetchAPIData();
+  // Verificar sesión y mostrar pantalla de inmediato (sin congelar en peticiones lentas)
   checkLoginSession();
   refreshAllModuleDropdowns();
+
+  // Sincronizar con la API en segundo plano sin demorar la interacción del usuario
+  fetchAPIData();
 
   // Registrar Autocompletados de Clientes
   setupClientAutocomplete('nf');
@@ -1058,41 +1072,47 @@ function setupLoginHandler() {
 
     if (errorMsg) errorMsg.textContent = "Verificando NIP...";
 
-    // 1. Intentar autenticación mediante API REST (si el backend Node.js / SQL Server está disponible)
-    try {
-      const response = await fetch(`${SQL_TUNNEL_BASE}/api/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nip: nipInput, email: email })
-      });
+    // 1. Intentar autenticación mediante API REST (con timeout rápido de 3.5 segundos)
+    if (SQL_TUNNEL_BASE) {
+      try {
+        const loginCtrl = new AbortController();
+        const loginTimer = setTimeout(() => loginCtrl.abort(), 3500);
+        const response = await fetch(`${SQL_TUNNEL_BASE}/api/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nip: nipInput, email: email }),
+          signal: loginCtrl.signal
+        });
+        clearTimeout(loginTimer);
 
-      const contentType = response.headers.get('content-type') || '';
-      if (response.ok && contentType.includes('application/json')) {
-        const data = await response.json();
-        if (data.success !== false && (data.user || data.id)) {
-          const user = data.user || data;
-          currentUser = user;
-          activeUserId = user.id || user.id_usuario;
-          localStorage.setItem('ca_active_user_id', activeUserId);
-          localStorage.setItem('ca_current_user', JSON.stringify(user));
+        const contentType = response.headers.get('content-type') || '';
+        if (response.ok && contentType.includes('application/json')) {
+          const data = await response.json();
+          if (data.success !== false && (data.user || data.id)) {
+            const user = data.user || data;
+            currentUser = user;
+            activeUserId = user.id || user.id_usuario;
+            localStorage.setItem('ca_active_user_id', activeUserId);
+            localStorage.setItem('ca_current_user', JSON.stringify(user));
 
-          if (document.getElementById('login-nip')) {
-            document.getElementById('login-nip').value = '';
+            if (document.getElementById('login-nip')) {
+              document.getElementById('login-nip').value = '';
+            }
+            if (errorMsg) errorMsg.textContent = '';
+
+            checkLoginSession();
+            switchView('dashboard');
+            return;
+          } else {
+            const msg = data.message || "NIP incorrecto o usuario no registrado.";
+            if (errorMsg) errorMsg.textContent = msg;
+            alert(msg);
+            return;
           }
-          if (errorMsg) errorMsg.textContent = '';
-
-          checkLoginSession();
-          switchView('dashboard');
-          return;
-        } else {
-          const msg = data.message || "NIP incorrecto o usuario no registrado.";
-          if (errorMsg) errorMsg.textContent = msg;
-          alert(msg);
-          return;
         }
+      } catch (err) {
+        console.warn('API /api/login lenta o fuera de línea (procediendo con verificación inmediata):', err.message);
       }
-    } catch (err) {
-      console.warn('API /api/login no responde JSON, realizando verificación local:', err);
     }
 
     // 2. Fallback a Verificación Local (Netlify / Modo Estático u Offline)
