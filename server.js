@@ -62,7 +62,7 @@ try {
 // =====================================================================
 const https = require('https');
 const fs = require('fs');
-const { spawn, exec } = require('child_process');
+const { spawn } = require('child_process');
 
 let cfProcess = null;
 let activeTunnelUrl = null;
