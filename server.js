@@ -100,8 +100,13 @@ function launchTunnel() {
         cfProcess = child;
         isStartingTunnel = false;
 
+        let hasRateLimit = false;
         const onData = (chunk) => {
             const text = chunk.toString();
+
+            if (text.includes('status 429') || text.includes('1015')) {
+                hasRateLimit = true;
+            }
 
             // 1. Detectar URL del túnel
             const match = text.match(/https:\/\/([a-z0-9\-]+\.trycloudflare\.com)/);
@@ -147,15 +152,20 @@ function launchTunnel() {
         child.stderr.on('data', onData);
 
         child.on('close', (code) => {
-            console.warn(`[Cloudflare] Proceso de túnel finalizado (código ${code}). Reiniciando en 5s...`);
             cfProcess = null;
-            setTimeout(launchTunnel, 5000);
+            const waitMs = hasRateLimit ? 60000 : 15000;
+            if (hasRateLimit) {
+                console.warn(`[Cloudflare] ⚠️ Rate limit activo (Error 1015/429). Pausando reintentos por 60 segundos...`);
+            } else {
+                console.warn(`[Cloudflare] Proceso de túnel finalizado (código ${code}). Reintentando en 15s...`);
+            }
+            setTimeout(launchTunnel, waitMs);
         });
 
         child.on('error', (err) => {
             console.error('[Cloudflare] Error ejecutando cloudflared:', err.message);
             cfProcess = null;
-            setTimeout(launchTunnel, 7000);
+            setTimeout(launchTunnel, 20000);
         });
     });
 }

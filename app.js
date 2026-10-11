@@ -100,6 +100,7 @@ let isMergingFromCloud = false;
 // En ese caso, las peticiones van al mismo origen sin necesitar la URL del túnel
 const IS_SAME_ORIGIN = (
   window.location.hostname === 'localhost' ||
+  window.location.hostname === '127.0.0.1' ||
   window.location.hostname.includes('trycloudflare.com') ||
   window.location.hostname.includes('192.168.') ||
   window.location.hostname.includes('26.179.')
