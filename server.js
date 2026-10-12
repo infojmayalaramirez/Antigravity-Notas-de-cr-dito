@@ -153,11 +153,11 @@ function launchTunnel() {
 
         child.on('close', (code) => {
             cfProcess = null;
-            const waitMs = hasRateLimit ? 60000 : 15000;
+            const waitMs = hasRateLimit ? 300000 : 30000;
             if (hasRateLimit) {
-                console.warn(`[Cloudflare] ⚠️ Rate limit activo (Error 1015/429). Pausando reintentos por 60 segundos...`);
+                console.warn(`[Cloudflare] ⚠️ Rate limit activo (Error 1015/429). Pausando reintentos por 5 minutos para enfriar la IP...`);
             } else {
-                console.warn(`[Cloudflare] Proceso de túnel finalizado (código ${code}). Reintentando en 15s...`);
+                console.warn(`[Cloudflare] Proceso de túnel cerrado (código ${code}). Reintentando en 30s...`);
             }
             setTimeout(launchTunnel, waitMs);
         });
@@ -165,50 +165,15 @@ function launchTunnel() {
         child.on('error', (err) => {
             console.error('[Cloudflare] Error ejecutando cloudflared:', err.message);
             cfProcess = null;
-            setTimeout(launchTunnel, 20000);
+            setTimeout(launchTunnel, 30000);
         });
     });
 }
 
 function restartTunnel() {
     killAllCloudflared(() => {
-        setTimeout(launchTunnel, 3000);
+        setTimeout(launchTunnel, 5000);
     });
-}
-
-// Watchdog prudente: Ping cada 45 segundos al túnel público
-// Requiere 3 fallas consecutivas para evitar falsos positivos
-setInterval(() => {
-    if (!activeTunnelUrl || isStartingTunnel) return;
-
-    const pingUrl = `${activeTunnelUrl}/api/ping?t=${Date.now()}`;
-    const req = https.get(pingUrl, { timeout: 12000 }, (res) => {
-        if (res.statusCode === 200) {
-            pingFailureCount = 0;
-        } else {
-            pingFailureCount++;
-            handlePingFailure();
-        }
-    });
-
-    req.on('error', () => {
-        pingFailureCount++;
-        handlePingFailure();
-    });
-
-    req.on('timeout', () => {
-        req.destroy();
-        pingFailureCount++;
-        handlePingFailure();
-    });
-}, 45000);
-
-function handlePingFailure() {
-    if (pingFailureCount >= 3) {
-        console.warn(`[Watchdog] ⚠️ El túnel no responde tras ${pingFailureCount} intentos. Reiniciando de forma limpia...`);
-        pingFailureCount = 0;
-        restartTunnel();
-    }
 }
 
 // Limpiar procesos al cerrar Node.js

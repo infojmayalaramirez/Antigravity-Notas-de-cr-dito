@@ -71,18 +71,17 @@ const DEFAULT_SUCURSALES_MAESTRAS = [
   { id: "S03", nombre: "Ensenada Puerto", direccion: "Av. Ruiz #120, Col. Centro", activaFinanciera: false }
 ];
 
-// Colección global de usuarios en memoria (asegurando siempre la disponibilidad de las cuentas espejos de SQL Server)
-// FRONTEND STATELESS: arrays vacíos al arranque. SQL Server es la única fuente de verdad.
-// Los datos se obtienen en el primer fetchAPIData() que se ejecuta inmediatamente al cargar.
-let usuarios = [];
-let sucursales = DEFAULT_SUCURSALES_MAESTRAS;
-let clientes = [];
-let operadores = [];
-let vendedores = [];
-let presupuestos = [];
-let proveedores = [];
-let notas = [];
-let faltantesPicking = [];
+// Cargar caché local persistente o datos maestros para que el sistema NUNCA aparezca en ceros
+const _persistedCache = loadData('ca_master_cache', null);
+let usuarios = (_persistedCache && Array.isArray(_persistedCache.usuarios) && _persistedCache.usuarios.length > 0) ? _persistedCache.usuarios : (typeof INITIAL_USUARIOS !== 'undefined' ? INITIAL_USUARIOS : DEFAULT_USUARIOS_FALLBACK);
+let sucursales = (_persistedCache && Array.isArray(_persistedCache.sucursales) && _persistedCache.sucursales.length > 0) ? _persistedCache.sucursales : (typeof INITIAL_SUCURSALES !== 'undefined' ? INITIAL_SUCURSALES : DEFAULT_SUCURSALES_MAESTRAS);
+let clientes = (_persistedCache && Array.isArray(_persistedCache.clientes) && _persistedCache.clientes.length > 0) ? _persistedCache.clientes : (typeof INITIAL_CLIENTES !== 'undefined' ? INITIAL_CLIENTES : []);
+let operadores = (_persistedCache && Array.isArray(_persistedCache.operadores)) ? _persistedCache.operadores : (typeof INITIAL_OPERADORES !== 'undefined' ? INITIAL_OPERADORES : []);
+let vendedores = (_persistedCache && Array.isArray(_persistedCache.vendedores)) ? _persistedCache.vendedores : (typeof INITIAL_VENDEDORES !== 'undefined' ? INITIAL_VENDEDORES : []);
+let presupuestos = (_persistedCache && Array.isArray(_persistedCache.presupuestos)) ? _persistedCache.presupuestos : (typeof INITIAL_PRESUPUESTOS !== 'undefined' ? INITIAL_PRESUPUESTOS : []);
+let proveedores = (_persistedCache && Array.isArray(_persistedCache.proveedores)) ? _persistedCache.proveedores : (typeof INITIAL_PROVEEDORES !== 'undefined' ? INITIAL_PROVEEDORES : []);
+let notas = (_persistedCache && Array.isArray(_persistedCache.notas)) ? _persistedCache.notas : (typeof INITIAL_NOTAS !== 'undefined' ? INITIAL_NOTAS : []);
+let faltantesPicking = (_persistedCache && Array.isArray(_persistedCache.faltantesPicking)) ? _persistedCache.faltantesPicking : [];
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
 // --- SINCRONIZACIÓN DIRECTA CON SQL SERVER VÍA CLOUDFLARE TUNNEL ---
@@ -521,16 +520,40 @@ async function fetchAPIData() {
       faltantesPicking = sqlData.faltantesPicking;
     }
     updateSyncStatusUI('🟢 SQL Server Conectado', true);
+    // Guardar copia local persistente de respaldo para cuando no haya red
+    saveData('ca_master_cache', {
+      usuarios, sucursales, clientes, operadores, vendedores, proveedores, presupuestos, notas, faltantesPicking,
+      updatedAt: new Date().toISOString()
+    });
   } else {
-    // Sin conexión al túnel: mostrar advertencia y re-intentar resolución de URL desde GitHub
-    updateSyncStatusUI('🔴 Sin conexión a SQL Server', false);
-    console.warn('[fetchAPIData] Túnel no disponible. Re-buscando URL activa en GitHub...');
-    if (!IS_SAME_ORIGIN) resolveServerURL();
-    if (!Array.isArray(sucursales) || sucursales.length === 0) {
-      sucursales = DEFAULT_SUCURSALES_MAESTRAS;
+    // Si el servidor SQL no responde de inmediato por túnel:
+    // MANTENER LOS DATOS ACTIVOS DE LA CACHÉ LOCAL EN VEZ DE MOSTRAR CEROS
+    const cached = loadData('ca_master_cache', null);
+    if (cached) {
+      if (Array.isArray(cached.usuarios) && cached.usuarios.length > 0) usuarios = cached.usuarios;
+      if (Array.isArray(cached.sucursales) && cached.sucursales.length > 0) sucursales = cached.sucursales;
+      if (Array.isArray(cached.clientes) && cached.clientes.length > 0) clientes = cached.clientes;
+      if (Array.isArray(cached.operadores)) operadores = cached.operadores;
+      if (Array.isArray(cached.vendedores)) vendedores = cached.vendedores;
+      if (Array.isArray(cached.proveedores)) proveedores = cached.proveedores;
+      if (Array.isArray(cached.presupuestos)) presupuestos = cached.presupuestos;
+      if (Array.isArray(cached.notas)) notas = cached.notas;
+      if (Array.isArray(cached.faltantesPicking)) faltantesPicking = cached.faltantesPicking;
+    } else {
+      if (typeof INITIAL_CLIENTES !== 'undefined' && clientes.length === 0) clientes = INITIAL_CLIENTES;
+      if (typeof INITIAL_VENDEDORES !== 'undefined' && vendedores.length === 0) vendedores = INITIAL_VENDEDORES;
+      if (typeof INITIAL_NOTAS !== 'undefined' && notas.length === 0) notas = INITIAL_NOTAS;
+      if (typeof INITIAL_OPERADORES !== 'undefined' && operadores.length === 0) operadores = INITIAL_OPERADORES;
+      if (typeof INITIAL_PROVEEDORES !== 'undefined' && proveedores.length === 0) proveedores = INITIAL_PROVEEDORES;
     }
-    if (typeof refreshAllModuleDropdowns === 'function') refreshAllModuleDropdowns();
-    return;
+
+    if (IS_SAME_ORIGIN) {
+      updateSyncStatusUI('🟡 Conectando servidor local...', false);
+    } else {
+      updateSyncStatusUI('🟡 Modo Respaldo (Sin Conexión Remota)', false);
+    }
+    console.warn('[fetchAPIData] Servidor remoto no respondió. Mostrando datos de respaldo locales.');
+    if (!IS_SAME_ORIGIN) resolveServerURL();
   }
 
   // --- REPINTAR TODA LA UI con datos frescos del SQL Server ---
