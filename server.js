@@ -30,7 +30,7 @@ async function getPool() {
 // MIDDLEWARE
 // =====================================================================
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '25mb' }));
 
 // Cache-Control: no-cache en TODOS los GET — el navegador siempre pide datos frescos de SQL Server
 app.use((req, res, next) => {
@@ -908,7 +908,25 @@ app.post('/api/notas', async (req, res) => {
 
         // Fix: extraer folio numerico - strip prefijo "N" si existe (e.g. "N1001" -> 1001)
         const folioRaw  = String(nota.folio || nota.id || '').replace(/\D/g, '');
-        const notaId    = parseInt(folioRaw || String(Date.now()).slice(-6), 10);
+        let notaId      = parseInt(folioRaw || String(Date.now()).slice(-6), 10);
+        const esNueva   = nota.esNueva === true;
+        delete nota.esNueva;
+
+        // Evitar colisiones de folio entre usuarios: si es nota NUEVA y el folio ya existe,
+        // el servidor asigna el siguiente folio libre (MAX + 1) en lugar de sobrescribir.
+        if (esNueva) {
+            const poolChk = await getPool();
+            const exists = await poolChk.request().input('id', sql.Int, notaId)
+                .query('SELECT 1 AS e FROM dbo.Notas WHERE id_nota=@id');
+            if (exists.recordset.length) {
+                const mx = await poolChk.request().query('SELECT ISNULL(MAX(id_nota),0) AS m FROM dbo.Notas');
+                const oldId = notaId;
+                notaId = (mx.recordset[0].m || 0) + 1;
+                nota.folio = String(notaId).padStart(4, '0');
+                nota.id = 'N' + nota.folio;
+                console.log(`[POST /api/notas] Folio ${oldId} ocupado. Reasignado a ${notaId}.`);
+            }
+        }
 
         const notaTipoRaw = String(nota.tipo || nota.tipo_nota || 'Fisico').trim();
         const notaTipo    = notaTipoRaw.toLowerCase().includes('finan') ? 'Financiera' : 'Física';
@@ -984,7 +1002,7 @@ app.post('/api/notas', async (req, res) => {
             `);
 
         console.log('[POST /api/notas] Nota #' + notaId + ' (' + notaTipo + ') guardada. Total: $' + total);
-        res.json({ success: true, id: notaId });
+        res.json({ success: true, id: notaId, folio: String(notaId).padStart(4, '0') });
     } catch (error) {
         console.error('[POST /api/notas]', error.message);
         res.status(500).json({ error: error.message });

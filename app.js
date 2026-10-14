@@ -198,8 +198,94 @@ async function fetchFromSQLServer() {
   }
 }
 
+// --- COLA DE NOTAS PENDIENTES (garantiza que ninguna nota se pierda si el túnel falla) ---
+const PENDING_NOTAS_KEY = 'ca_notas_pendientes';
+function getPendingNotas() {
+  try { return JSON.parse(localStorage.getItem(PENDING_NOTAS_KEY)) || []; } catch (e) { return []; }
+}
+function setPendingNotas(arr) {
+  localStorage.setItem(PENDING_NOTAS_KEY, JSON.stringify(arr || []));
+}
+function queuePendingNota(nota) {
+  const arr = getPendingNotas().filter(n => String(n.id) !== String(nota.id));
+  const copy = { ...nota };
+  delete copy.incidenciaFoto; // no saturar localStorage con imágenes
+  arr.push(copy);
+  setPendingNotas(arr);
+}
+
+async function sendNotaToServer(nota) {
+  if (!SQL_TUNNEL_BASE) await resolveServerURL();
+  if (!SQL_TUNNEL_BASE) throw new Error('Servidor no disponible');
+  const payload = { ...nota };
+  delete payload.incidenciaFoto; // el servidor no la almacena; evita payloads enormes
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
+  const res = await fetch(`${SQL_TUNNEL_BASE}/api/notas`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: ctrl.signal
+  });
+  clearTimeout(timer);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const data = await res.json();
+  if (!data || data.success === false) throw new Error((data && data.error) || 'Respuesta inválida');
+  return data;
+}
+
+// Si el servidor reasignó el folio (colisión entre usuarios), actualizar la nota local
+function applyServerFolio(oldId, data) {
+  if (!data || !data.folio) return;
+  const newId = 'N' + data.folio;
+  if (String(oldId) === newId) return;
+  const idx = notas.findIndex(n => String(n.id) === String(oldId));
+  if (idx !== -1) {
+    notas[idx].id = newId;
+    notas[idx].folio = data.folio;
+  }
+}
+
+let _flushingNotas = false;
+async function flushPendingNotas() {
+  if (_flushingNotas) return;
+  const pend = getPendingNotas();
+  if (!pend.length) return;
+  _flushingNotas = true;
+  const remaining = [];
+  for (const n of pend) {
+    try {
+      const data = await sendNotaToServer(n);
+      applyServerFolio(n.id, data);
+      const local = notas.find(x => String(x.id) === String((data && data.folio) ? 'N' + data.folio : n.id));
+      if (local) delete local.esNueva;
+    } catch (e) {
+      remaining.push(n);
+    }
+  }
+  // Conservar también lo que se haya encolado mientras se enviaba
+  const added = getPendingNotas().filter(p => !pend.some(o => String(o.id) === String(p.id)));
+  setPendingNotas([...remaining, ...added]);
+  _flushingNotas = false;
+}
+
 // Función para escribir al SQL Server via túnel (guardar cambios)
 async function pushToSQLServer(entity, item) {
+  if (entity === 'notas' && item) {
+    // Encolar primero: si falla el envío, la nota se reintenta automáticamente
+    queuePendingNota(item);
+    try {
+      const oldId = item.id;
+      const data = await sendNotaToServer(item);
+      setPendingNotas(getPendingNotas().filter(n => String(n.id) !== String(oldId)));
+      applyServerFolio(oldId, data);
+      delete item.esNueva;
+      return data;
+    } catch (e) {
+      console.warn('[pushToSQLServer] Nota en cola para reintento:', item.id, e.message);
+      return null;
+    }
+  }
   if (!SQL_TUNNEL_BASE) await resolveServerURL();
   try {
     const endpoint = `${SQL_TUNNEL_BASE}/api/${entity}`;
@@ -454,6 +540,8 @@ setInterval(async () => {
 // Función principal — ÚNICA FUENTE DE VERDAD: SQL Server via túnel Cloudflare
 // Cero localStorage como fuente de datos. El backend manda la ley.
 async function fetchAPIData() {
+  // Reintentar primero cualquier nota que no haya llegado a SQL Server
+  try { await flushPendingNotas(); } catch (e) {}
   const sqlData = await fetchFromSQLServer();
   if (sqlData) {
     // --- SINCRONIZACIÓN TOTAL: reemplazar arrays locales con lo que dice SQL Server ---
@@ -512,6 +600,10 @@ async function fetchAPIData() {
           firmas: fullNota.firmas || { elaboro: fullNota.id_usuario_creador || null, almacen: null, autorizo: null, cliente: null },
           productos: Array.isArray(fullNota.productos) ? fullNota.productos : []
         };
+      });
+      // Mantener visibles las notas aún no confirmadas por SQL Server (no se pierden)
+      getPendingNotas().forEach(p => {
+        if (!notas.some(n => String(n.id) === String(p.id))) notas.push(p);
       });
     }
     if (Array.isArray(sqlData.faltantes)) {
@@ -2668,7 +2760,8 @@ async function submitPhysicalNote(isDraft) {
       cliente: null
     },
     estado_autorizacion: isDraft ? 'Borrador' : 'Autorizada',
-    estado_operacion: 'Activa'
+    estado_operacion: 'Activa',
+    esNueva: true
   };
 
   notas.push(nuevaNota);
@@ -3168,7 +3261,8 @@ async function submitFinancialNote(isDraft) {
       cliente: null
     },
     estado_autorizacion: isDraft ? 'Borrador' : (esPendiente ? 'Pendiente' : 'Autorizada'),
-    estado_operacion: 'Activa'
+    estado_operacion: 'Activa',
+    esNueva: true
   };
 
   // Restar de presupuesto si es oficial y NO está pendiente de aprobación (se resta al aprobarse)
