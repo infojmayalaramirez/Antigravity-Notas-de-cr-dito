@@ -118,6 +118,8 @@ async function resolveServerURL() {
     return;
   }
 
+  const isValidTunnel = (u) => typeof u === 'string' && u.startsWith('https://') && !u.includes('api.trycloudflare.com');
+
   // 1. Intentar GitHub API directa con timeout de 3 segundos
   try {
     const apiCtrl = new AbortController();
@@ -132,7 +134,7 @@ async function resolveServerURL() {
       const apiData = await apiRes.json();
       if (apiData && apiData.content) {
         const decoded = JSON.parse(atob(apiData.content.replace(/\s/g, '')));
-        if (decoded && decoded.url) {
+        if (decoded && isValidTunnel(decoded.url)) {
           SQL_TUNNEL_BASE = decoded.url;
           localStorage.setItem('ca_last_active_tunnel', SQL_TUNNEL_BASE);
           console.log('[SQL] URL fresca desde GitHub API:', SQL_TUNNEL_BASE, '(actualizado:', decoded.updated, ')');
@@ -152,7 +154,7 @@ async function resolveServerURL() {
     clearTimeout(rawTimer);
     if (r.ok) {
       const data = await r.json();
-      if (data && data.url) {
+      if (data && isValidTunnel(data.url)) {
         SQL_TUNNEL_BASE = data.url;
         localStorage.setItem('ca_last_active_tunnel', SQL_TUNNEL_BASE);
         console.log('[SQL] URL del túnel desde GitHub Raw:', SQL_TUNNEL_BASE);
@@ -165,9 +167,11 @@ async function resolveServerURL() {
 
   // 3. Fallback: usar el último túnel activo recordado en el dispositivo
   const cached = localStorage.getItem('ca_last_active_tunnel');
-  if (cached) {
+  if (isValidTunnel(cached)) {
     SQL_TUNNEL_BASE = cached;
     console.log('[SQL] Usando última URL conocida guardada en dispositivo:', SQL_TUNNEL_BASE);
+  } else if (cached) {
+    localStorage.removeItem('ca_last_active_tunnel');
   }
 }
 

@@ -92,7 +92,7 @@ function launchTunnel() {
         }
 
         console.log('[Cloudflare] 🌐 Levantando túnel seguro hacia http://127.0.0.1:3000...');
-        const child = spawn(cfExePath, ['tunnel', '--url', 'http://127.0.0.1:3000'], {
+        const child = spawn(cfExePath, ['tunnel', '--url', 'http://127.0.0.1:3000', '--protocol', 'http2'], {
             windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe']
         });
@@ -108,8 +108,8 @@ function launchTunnel() {
                 hasRateLimit = true;
             }
 
-            // 1. Detectar URL del túnel
-            const match = text.match(/https:\/\/([a-z0-9\-]+\.trycloudflare\.com)/);
+            // 1. Detectar URL real del túnel (siempre contiene guiones, nunca api.trycloudflare.com)
+            const match = text.match(/https:\/\/([a-z0-9]+-[a-z0-9\-]+\.trycloudflare\.com)/);
             if (match) {
                 const freshUrl = match[0];
                 if (freshUrl !== activeTunnelUrl) {
@@ -129,7 +129,7 @@ function launchTunnel() {
                     // Sincronizar con GitHub de forma serializada (sin colisiones)
                     if (!isGitPushing) {
                         isGitPushing = true;
-                        exec('git add current_tunnel.json && git commit -m "auto: live tunnel -> ' + freshUrl + '" && git push origin main', (err) => {
+                        exec('git add current_tunnel.json && git commit -m "auto: live tunnel -> ' + freshUrl + '" && git -c http.version=HTTP/1.1 -c http.postBuffer=524288000 push origin main', (err) => {
                             isGitPushing = false;
                             if (!err) {
                                 console.log('[Cloudflare] 🚀 Nueva URL publicada en GitHub con éxito.');
