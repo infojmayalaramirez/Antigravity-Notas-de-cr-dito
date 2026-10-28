@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="es">
 
 <head>
@@ -766,7 +766,7 @@
                   <button class="btn btn-primary btn-sm" id="btn-sig-almacen" style="display:none; width:100%;"><i
                       class="fa-solid fa-pen"></i> Firmar</button>
                 </div>
-                <div
+                <div id="sig-box-contabilidad"
                   style="background:#fff; padding:10px; border-radius:var(--radius-sm); border:1px solid var(--border-color); text-align:center;">
                   <div style="font-weight:700; font-size:12px; color:var(--text-muted);">CONTABILIDAD</div>
                   <div id="sig-status-contabilidad" class="signature-status" style="margin: 8px 0; font-size:12px;">N/A
@@ -784,9 +784,20 @@
               </div>
             </div>
 
+            <!-- Bloque de aprobaciÃ³n para notas Pendientes -->
+            <div id="det-pending-auth-box" class="hidden" style="margin: 16px 0; padding: 14px; background: #fffbeb; border: 1px solid #f59e0b; border-radius: var(--radius-sm); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+              <div style="font-size: 13px; color: #92400e; font-weight: 600;">
+                <i class="fa-solid fa-clock"></i> Esta nota estÃ¡ <strong>Pendiente de AutorizaciÃ³n</strong> por Gerencia / AdministraciÃ³n.
+              </div>
+              <div style="display: flex; gap: 8px;" id="det-pending-auth-buttons">
+                <button type="button" class="btn btn-success btn-sm" id="btn-approve-nota-action"><i class="fa-solid fa-check"></i> Autorizar Nota</button>
+                <button type="button" class="btn btn-danger btn-sm" id="btn-reject-nota-action"><i class="fa-solid fa-xmark"></i> Rechazar</button>
+              </div>
+            </div>
+
             <!-- OpciÃ³n de cancelar la nota si no estÃ¡ firmada o por Gerente -->
-            <div style="margin-top: 30px; display:flex; justify-content:space-between;">
-              <button class="btn btn-danger btn-sm" id="btn-cancel-nota-action"><i class="fa-solid fa-ban"></i> Cancelar
+            <div style="margin-top: 30px; display:flex; justify-content:space-between; align-items:center;">
+              <button type="button" class="btn btn-danger btn-sm" id="btn-cancel-nota-action"><i class="fa-solid fa-ban"></i> Cancelar
                 Nota de CrÃ©dito</button>
               <div class="badge badge-draft" id="det-estado-badge">Borrador</div>
             </div>
@@ -2204,8 +2215,8 @@
   </div>
 
   <!-- Scripts -->
-  <script src="mockData.js?v=33"></script>
-  <script src="app.js?v=33"></script>
+  <script src="mockData.js?v=34"></script>
+  <script src="app.js?v=34"></script>
 
   <!-- InicializaciÃ³n de GrÃ¡ficas de Inteligencia de Negocio (Chart.js) -->
   <script>

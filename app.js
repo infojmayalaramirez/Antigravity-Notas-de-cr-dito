@@ -13,11 +13,20 @@ function loadData(key, defaultData) {
 }
 
 function saveData(key, data) {
-  localStorage.setItem(key, JSON.stringify(data));
-  if (!isMergingFromCloud && typeof triggerCloudPushDebounced === 'function') {
-    triggerCloudPushDebounced();
-  }
+  try {
+    localStorage.setItem(key, JSON.stringify(data));
+  } catch (e) {}
 }
+
+// Utilidades de fecha en hora local (evita desfase UTC después de las 18:00 hrs en México)
+function localDateStr(d = new Date()) {
+  const dt = (d instanceof Date && !isNaN(d)) ? d : new Date();
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+}
+function localMonthStr(d = new Date()) {
+  return localDateStr(d).substring(0, 7);
+}
+window.ultimoFolioReservado = parseInt(localStorage.getItem('ca_ultimo_folio'), 10) || 0;
 
 const DEFAULT_USUARIOS_FALLBACK = [
   { id: "U01", id_usuario: "U01", nombre: "Administrador Universal", email: "cansagdl@gmail.com", rol: "Administrador", sucursalId: "S01", id_sucursal: "S01", nip: "4819", bloqueado: false, adminTipo: "Ambos", telefono: "3339567196" },
@@ -37,17 +46,12 @@ const DEFAULT_CLIENTES_FALLBACK = [
 ];
 
 function ensureAllSqlUsersExist(localUsers) {
-  const userMap = new Map();
-  DEFAULT_USUARIOS_FALLBACK.forEach(u => {
-    if (u && (u.id || u.id_usuario)) userMap.set(String(u.id || u.id_usuario), u);
-  });
-  (localUsers || []).forEach(u => {
-    if (u && (u.id || u.id_usuario)) {
-      const key = String(u.id || u.id_usuario);
-      userMap.set(key, { ...userMap.get(key), ...u });
-    }
-  });
-  return Array.from(userMap.values());
+  if (Array.isArray(localUsers) && localUsers.length > 0) {
+    return localUsers
+      .filter(u => u && (u.id || u.id_usuario))
+      .map(u => ({ ...u, id: String(u.id || u.id_usuario), id_usuario: String(u.id_usuario || u.id) }));
+  }
+  return DEFAULT_USUARIOS_FALLBACK.map(u => ({ ...u }));
 }
 
 function ensureAllSqlClientsExist(localClients) {
@@ -526,30 +530,71 @@ function applyServerMasterStore(store) {
   isMergingFromCloud = false;
 }
 
+// Acción atómica en SQL Server para notas (cancelar | firmar | aprobar | rechazar | imprimir)
+async function ejecutarAccionNota(notaId, payload) {
+  if (!SQL_TUNNEL_BASE) await resolveServerURL();
+  if (!SQL_TUNNEL_BASE) {
+    alert('No hay conexión con el servidor SQL. Verifica tu red o el túnel.');
+    return { ok: false };
+  }
+  try {
+    const userId = currentUser ? (currentUser.id || currentUser.id_usuario) : '';
+    const res = await fetch(`${SQL_TUNNEL_BASE}/api/notas/${encodeURIComponent(notaId)}/accion`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, ...payload })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) {
+      alert(data.error || `No se pudo ejecutar la acción (HTTP ${res.status}).`);
+      return { ok: false, error: data.error };
+    }
+    if (data.nota) {
+      const idx = notas.findIndex(n => String(n.id) === String(data.nota.id) || String(n.id) === String(notaId) || parseInt(n.folio, 10) === parseInt(data.nota.folio, 10));
+      if (idx !== -1) notas[idx] = { ...notas[idx], ...data.nota };
+      saveData('ca_notas', notas);
+    }
+    await fetchAPIData();
+    return { ok: true, nota: data.nota };
+  } catch (e) {
+    console.error('[ejecutarAccionNota]', e);
+    alert('Error de comunicación con el servidor: ' + e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
 // Polling continuo: lee y escribe SIEMPRE contra SQL Server real (via túnel Cloudflare)
 let _syncRunning = false;
-// Polling cada 5 segundos: la Computadora A ve automáticamente lo que hizo la Computadora B
+// Polling cada 4 segundos: Computadora y Celular ven automáticamente lo que hizo cualquier otro equipo
 setInterval(async () => {
   if (!_syncRunning) {
     _syncRunning = true;
-    await fetchAPIData();
-    _syncRunning = false;
+    try { await fetchAPIData(); } finally { _syncRunning = false; }
   }
-}, 5000);
+}, 4000);
 
 // Función principal — ÚNICA FUENTE DE VERDAD: SQL Server via túnel Cloudflare
-// Cero localStorage como fuente de datos. El backend manda la ley.
 async function fetchAPIData() {
-  // Reintentar primero cualquier nota que no haya llegado a SQL Server
+  // Reintentar primero cualquier nota nueva que no haya llegado a SQL Server
   try { await flushPendingNotas(); } catch (e) {}
   const sqlData = await fetchFromSQLServer();
   if (sqlData) {
     // --- SINCRONIZACIÓN TOTAL: reemplazar arrays locales con lo que dice SQL Server ---
     if (Array.isArray(sqlData.usuarios) && sqlData.usuarios.length > 0) {
-      usuarios = sqlData.usuarios.map(u => ({ ...u, id: u.id || u.id_usuario }));
+      usuarios = sqlData.usuarios.map(u => ({
+        ...u,
+        id: String(u.id || u.id_usuario),
+        id_usuario: String(u.id_usuario || u.id),
+        sucursalId: String(u.sucursalId || u.id_sucursal || 'S01'),
+        bloqueado: !!u.bloqueado
+      }));
     }
     if (Array.isArray(sqlData.sucursales) && sqlData.sucursales.length > 0) {
-      sucursales = sqlData.sucursales;
+      sucursales = sqlData.sucursales.map(s => ({
+        ...s,
+        id: String(s.id || s.id_sucursal),
+        activaFinanciera: !!s.activaFinanciera
+      }));
     }
     if (Array.isArray(sqlData.clientes)) {
       clientes = ensureAllSqlClientsExist(sqlData.clientes);
@@ -565,8 +610,9 @@ async function fetchAPIData() {
     if (Array.isArray(sqlData.proveedores)) {
       proveedores = sqlData.proveedores;
     }
-    if (Array.isArray(sqlData.presupuestos)) {
-      presupuestos = sqlData.presupuestos;
+    if (typeof sqlData.ultimoFolioReservado === 'number') {
+      window.ultimoFolioReservado = sqlData.ultimoFolioReservado;
+      localStorage.setItem('ca_ultimo_folio', String(sqlData.ultimoFolioReservado));
     }
     if (Array.isArray(sqlData.notas)) {
       notas = sqlData.notas.map(n => {
@@ -577,49 +623,90 @@ async function fetchAPIData() {
         const fullNota = { ...parsedJson, ...n };
         const rawTipo = String(fullNota.tipo || fullNota.tipo_nota || 'Fisico').trim().toLowerCase();
         const isFin = rawTipo.includes('finan');
-        const numId = String(fullNota.id || fullNota.id_nota || ('N' + (fullNota.folio || '')));
-        
+        const folStr = String(fullNota.folio || fullNota.folio_consecutivo || fullNota.id_nota || String(fullNota.id || '').replace(/\D/g, '')).padStart(4, '0');
+        const numId = 'N' + folStr;
+        const estOp = fullNota.estado_operacion || (fullNota.estado === 'Cancelada' ? 'Cancelada' : 'Activa');
+        const estAut = fullNota.estado_autorizacion || (fullNota.estado && fullNota.estado !== 'Cancelada' ? fullNota.estado : 'Autorizada');
+
         return {
           ...fullNota,
           id: numId,
-          folio: String(fullNota.folio || fullNota.folio_consecutivo || fullNota.id_nota || numId.replace(/\D/g, '')),
-          serie: fullNota.serie || 'A',
+          folio: folStr,
+          serie: fullNota.serie || getFolioSeriesAndNumber(parseInt(folStr, 10) || 1).serie,
           tipo: isFin ? 'Financiero' : 'Fisico',
           tipo_nota: isFin ? 'Financiera' : 'Física',
-          clienteId: String(fullNota.clienteId || fullNota.id_cliente || fullNota.cliente_nombre || ''),
+          clienteId: String(fullNota.clienteId || fullNota.id_cliente || ''),
+          clienteNombre: String(fullNota.clienteNombre || fullNota.cliente_nombre || ''),
           vendedorId: String(fullNota.vendedorId || fullNota.id_vendedor || fullNota.id_usuario_creador || 'U01'),
           sucursalId: String(fullNota.sucursalId || fullNota.id_sucursal || 'S01'),
           operadorId: String(fullNota.operadorId || fullNota.id_operador || ''),
-          fechaEmision: fullNota.fechaEmision || fullNota.fecha_emision ? String(fullNota.fechaEmision || fullNota.fecha_emision).substring(0, 10) : new Date().toISOString().split('T')[0],
-          fechaAplicacion: fullNota.fechaAplicacion || fullNota.fecha_aplicacion ? String(fullNota.fechaAplicacion || fullNota.fecha_aplicacion).substring(0, 10) : new Date().toISOString().split('T')[0],
-          total: parseFloat(fullNota.total || fullNota.monto_total || fullNota.montoTotal || fullNota.importeDescuento || 0),
-          subtotal: parseFloat(fullNota.subtotal || fullNota.total || 0),
-          estado_operacion: fullNota.estado_operacion || fullNota.estado || 'Activa',
-          estado_autorizacion: fullNota.estado_autorizacion || fullNota.estado || 'Autorizada',
-          estado: (fullNota.estado_operacion === 'Cancelada' || fullNota.estado === 'Cancelada') ? 'Cancelada' : (fullNota.estado_autorizacion || fullNota.estado || 'Autorizada'),
-          firmas: fullNota.firmas || { elaboro: fullNota.id_usuario_creador || null, almacen: null, autorizo: null, cliente: null },
+          operadorNombre: String(fullNota.operadorNombre || fullNota.operador_nombre || ''),
+          fechaEmision: (fullNota.fechaEmision || fullNota.fecha_emision) ? String(fullNota.fechaEmision || fullNota.fecha_emision).substring(0, 10) : localDateStr(),
+          fechaAplicacion: (fullNota.fechaAplicacion || fullNota.fecha_aplicacion || fullNota.fechaEmision) ? String(fullNota.fechaAplicacion || fullNota.fecha_aplicacion || fullNota.fechaEmision).substring(0, 10) : localDateStr(),
+          total: parseFloat(fullNota.total || fullNota.monto_total || fullNota.montoTotal || fullNota.importeDescuento || 0) || 0,
+          subtotal: parseFloat(fullNota.subtotal || fullNota.total || 0) || 0,
+          importeDescuento: parseFloat(fullNota.importeDescuento || (isFin ? fullNota.total : 0) || 0) || 0,
+          estado_operacion: estOp,
+          estado_autorizacion: estAut,
+          estado: estOp === 'Cancelada' ? 'Cancelada' : estAut,
+          firmas: {
+            elaboro: null,
+            almacen: null,
+            contabilidad: null,
+            autorizo: null,
+            ...(fullNota.firmas || {})
+          },
           productos: Array.isArray(fullNota.productos) ? fullNota.productos : []
         };
       });
-      // Mantener visibles las notas aún no confirmadas por SQL Server (no se pierden)
+      // Mantener visibles las notas nuevas aún en cola pendiente de envío
       getPendingNotas().forEach(p => {
-        if (!notas.some(n => String(n.id) === String(p.id))) notas.push(p);
+        if (!notas.some(n => String(n.id) === String(p.id) || (p.uid && n.uid === p.uid))) notas.push(p);
       });
+    }
+    if (Array.isArray(sqlData.presupuestos)) {
+      presupuestos = sqlData.presupuestos.map(p => ({
+        ...p,
+        limite: parseFloat(p.limite) || 0,
+        consumido: typeof getBudgetConsumedForSeller === 'function' ? getBudgetConsumedForSeller(p.vendedorId, p.mes) : (parseFloat(p.consumido) || 0),
+        bloquearExceso: !!p.bloquearExceso
+      }));
     }
     if (Array.isArray(sqlData.faltantes)) {
       faltantesPicking = sqlData.faltantes;
     } else if (Array.isArray(sqlData.faltantesPicking)) {
       faltantesPicking = sqlData.faltantesPicking;
     }
+
+    // Sincronizar en vivo los datos/permisos del usuario logueado en este dispositivo
+    if (activeUserId && usuarios.length > 0) {
+      const freshMe = usuarios.find(u => String(u.id) === String(activeUserId) || String(u.id_usuario) === String(activeUserId));
+      if (freshMe) {
+        if (freshMe.bloqueado) {
+          alert('Tu cuenta ha sido bloqueada por el Administrador.');
+          logout();
+          return;
+        }
+        const roleChanged = !currentUser || currentUser.rol !== freshMe.rol || currentUser.sucursalId !== freshMe.sucursalId || currentUser.adminTipo !== freshMe.adminTipo || currentUser.nombre !== freshMe.nombre;
+        currentUser = freshMe;
+        localStorage.setItem('ca_current_user', JSON.stringify(freshMe));
+        if (roleChanged) {
+          const hdr = document.getElementById('header-user-info');
+          if (hdr) hdr.innerHTML = `<i class="fa-solid fa-circle-user"></i> Hola, <strong>${currentUser.nombre}</strong> (${currentUser.rol})`;
+          applyRolePermissions();
+        }
+      }
+    }
+
     updateSyncStatusUI('🟢 SQL Server Conectado', true);
     // Guardar copia local persistente de respaldo para cuando no haya red
     saveData('ca_master_cache', {
       usuarios, sucursales, clientes, operadores, vendedores, proveedores, presupuestos, notas, faltantesPicking,
+      ultimoFolioReservado: window.ultimoFolioReservado,
       updatedAt: new Date().toISOString()
     });
   } else {
     // Si el servidor SQL no responde de inmediato por túnel:
-    // MANTENER LOS DATOS ACTIVOS DE LA CACHÉ LOCAL EN VEZ DE MOSTRAR CEROS
     const cached = loadData('ca_master_cache', null);
     if (cached) {
       if (Array.isArray(cached.usuarios) && cached.usuarios.length > 0) usuarios = cached.usuarios;
@@ -631,12 +718,7 @@ async function fetchAPIData() {
       if (Array.isArray(cached.presupuestos)) presupuestos = cached.presupuestos;
       if (Array.isArray(cached.notas)) notas = cached.notas;
       if (Array.isArray(cached.faltantesPicking)) faltantesPicking = cached.faltantesPicking;
-    } else {
-      if (typeof INITIAL_CLIENTES !== 'undefined' && clientes.length === 0) clientes = INITIAL_CLIENTES;
-      if (typeof INITIAL_VENDEDORES !== 'undefined' && vendedores.length === 0) vendedores = INITIAL_VENDEDORES;
-      if (typeof INITIAL_NOTAS !== 'undefined' && notas.length === 0) notas = INITIAL_NOTAS;
-      if (typeof INITIAL_OPERADORES !== 'undefined' && operadores.length === 0) operadores = INITIAL_OPERADORES;
-      if (typeof INITIAL_PROVEEDORES !== 'undefined' && proveedores.length === 0) proveedores = INITIAL_PROVEEDORES;
+      if (typeof cached.ultimoFolioReservado === 'number') window.ultimoFolioReservado = cached.ultimoFolioReservado;
     }
 
     if (IS_SAME_ORIGIN) {
@@ -644,32 +726,39 @@ async function fetchAPIData() {
     } else {
       updateSyncStatusUI('🟡 Modo Respaldo (Sin Conexión Remota)', false);
     }
-    console.warn('[fetchAPIData] Servidor remoto no respondió. Mostrando datos de respaldo locales.');
     if (!IS_SAME_ORIGIN) resolveServerURL();
   }
 
-  // --- REPINTAR TODA LA UI con datos frescos del SQL Server ---
-  // NOTA: NO llamar renderNotasFisicasList ni renderNotasFinancierasList aquí.
-  // Esas funciones cambian la subvista a LIST lo que interrumpe el formulario activo.
-  // En cambio, solo se refresca si el usuario NO está en esos formularios.
+  // --- REPINTAR TODA LA UI con datos frescos del SQL Server sin interrumpir formularios ---
   populateLoginUserSelect();
   if (typeof refreshAllModuleDropdowns === 'function') refreshAllModuleDropdowns();
-  
-  // Solo refrescar listas si el usuario NO está llenando un formulario de nota
-  const formViews = ['notas-fisicas', 'notas-financieras'];
-  const onForm = formViews.includes(currentView);
-  if (!onForm) {
-    if (typeof renderNotasFisicasList === 'function') renderNotasFisicasList();
-    if (typeof renderNotasFinancierasList === 'function') renderNotasFinancierasList();
-  }
-  
+
+  if (typeof renderNotasFisicasTableOnly === 'function') renderNotasFisicasTableOnly();
+  if (typeof renderNotasFinancierasTableOnly === 'function') renderNotasFinancierasTableOnly();
+
+  // Actualizar el folio sugerido en formularios abiertos sin borrar lo que escribe el usuario
+  const nextFolObj = getFolioSeriesAndNumber(getNextFolioNumber());
+  const nfFolioEl = document.getElementById('nf-folio');
+  if (nfFolioEl) nfFolioEl.value = `${nextFolObj.folio} - ${nextFolObj.serie}`;
+  const nfiFolioEl = document.getElementById('nfi-folio');
+  if (nfiFolioEl) nfiFolioEl.value = `${nextFolObj.folio} - ${nextFolObj.serie}`;
+
   if (typeof renderUsuariosTable === 'function') renderUsuariosTable();
   if (typeof renderCatalogosTables === 'function') renderCatalogosTables();
   if (typeof renderSucursalesTable === 'function') renderSucursalesTable();
-  if (typeof renderPresupuestosTable === 'function') renderPresupuestosTable();
+  if (typeof renderPresupuestosGrid === 'function' && currentView === 'presupuestos') renderPresupuestosGrid();
   if (currentView === 'dashboard' && typeof initDashboard === 'function') initDashboard();
+  if (currentView === 'reportes') {
+    if (typeof generateReport === 'function') generateReport();
+    if (typeof calculateAndRenderStatistics === 'function') calculateAndRenderStatistics();
+  }
+  if (currentView === 'notas-detail' && currentDetailNotaId && typeof viewNotaDetail === 'function') {
+    viewNotaDetail(currentDetailNotaId, true);
+  }
   if (typeof renderFaltantesPickingTable === 'function') renderFaltantesPickingTable();
-  if (typeof updateDashboard === 'function') updateDashboard();
+  if (currentView === 'faltantes-picking' && typeof renderFaltantesPickingHorizontalChart === 'function') {
+    renderFaltantesPickingHorizontalChart(currentPkChartPeriod);
+  }
 }
 
 // Funciones globales para respaldo manual JSON (Exportar e Importar)
@@ -769,12 +858,20 @@ window.importarDatosJSON = function(event) {
   const file = event.target.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = function(e) {
+  reader.onload = async function(e) {
     try {
       const imported = JSON.parse(e.target.result);
       if (imported && typeof imported === 'object') {
-        mergeAllDataFromStore(imported);
-        pushToCloudStorage();
+        applyServerMasterStore(imported);
+        if (!SQL_TUNNEL_BASE) await resolveServerURL();
+        if (SQL_TUNNEL_BASE) {
+          await fetch(`${SQL_TUNNEL_BASE}/api/migrar-localstorage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(imported)
+          }).catch(() => {});
+          await fetchAPIData();
+        }
         alert('Datos importados y sincronizados correctamente.');
       } else {
         alert('El archivo no contiene un formato de respaldo válido.');
@@ -786,9 +883,7 @@ window.importarDatosJSON = function(event) {
   reader.readAsText(file);
 };
 
-// Sincronización inicial y temporizador automático
-fetchAPIData();
-setInterval(fetchAPIData, 15000); // Polling de respaldo cada 15 seg
+// Sincronización inmediata al recuperar foco o visibilidad
 window.addEventListener('focus', () => { fetchAPIData(); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') fetchAPIData(); });
 
@@ -875,14 +970,11 @@ function getNotaDisplayState(n) {
 
 function getNextFolioNumber() {
   const activeNotas = notas.filter(n => n.estado !== 'Eliminada');
-  if (activeNotas.length === 0) {
-    localStorage.removeItem('ca_ultimo_folio');
-    return 1;
-  }
-  const foliosInDb = activeNotas.map(n => parseInt(n.folio)).filter(f => !isNaN(f));
+  const foliosInDb = activeNotas.map(n => parseInt(n.folio, 10)).filter(f => !isNaN(f));
   const maxDbFolio = foliosInDb.length > 0 ? Math.max(...foliosInDb) : 0;
-  const lastFolioUsed = parseInt(localStorage.getItem('ca_ultimo_folio')) || 0;
-  return Math.max(maxDbFolio, lastFolioUsed) + 1;
+  const lastFolioUsed = parseInt(localStorage.getItem('ca_ultimo_folio'), 10) || 0;
+  const serverReserved = parseInt(window.ultimoFolioReservado, 10) || 0;
+  return Math.max(maxDbFolio, lastFolioUsed, serverReserved) + 1;
 }
 
 function getFolioSeriesAndNumber(nextFolioNum) {
@@ -1147,6 +1239,7 @@ function checkLoginSession() {
 function populateLoginUserSelect() {
   const select = document.getElementById('login-email');
   if (!select) return;
+  const prevVal = select.value;
   
   usuarios = ensureAllSqlUsersExist(usuarios);
   saveData('ca_usuarios', usuarios);
@@ -1160,6 +1253,9 @@ function populateLoginUserSelect() {
       opt.textContent = `${u.nombre} (${u.rol || 'Usuario'}) - ${userVal}`;
       select.appendChild(opt);
     });
+    if (prevVal && Array.from(select.options).some(o => o.value === prevVal)) {
+      select.value = prevVal;
+    }
   } else {
     const opt = document.createElement('option');
     opt.value = '';
@@ -1399,6 +1495,8 @@ function applyRolePermissions() {
   if (!currentUser) return;
   const rol = currentUser.rol || 'Vendedor';
   const adminTipo = currentUser.adminTipo || "Ambos";
+  const userSuc = sucursales.find(s => s.id === currentUser.sucursalId);
+  const activaFinanciera = rol === 'Administrador' ? true : (userSuc ? !!userSuc.activaFinanciera : true);
   
   // 1. Mostrar/Ocultar controles de administración en formularios
   const formBudget = document.getElementById('form-budget-container');
@@ -1419,34 +1517,54 @@ function applyRolePermissions() {
     if (formUsuario) formUsuario.classList.add('hidden');
   }
 
-  // 2. Control de accesos de la barra de navegación según Rol
+  // Formularios de alta y limpieza en Catálogos (solo Administrador y Gerente pueden crear/modificar catálogos)
+  const canEditCatalogos = (rol === 'Administrador' || rol === 'Gerente');
+  ['form-cat-cliente', 'form-cat-operador', 'form-cat-vendedor', 'form-cat-proveedor'].forEach(formId => {
+    const f = document.getElementById(formId);
+    const card = f ? f.closest('.card') : null;
+    if (card) {
+      if (canEditCatalogos) card.classList.remove('hidden');
+      else card.classList.add('hidden');
+    }
+  });
+  const btnClearCat = document.querySelector('#view-catalogos button[onclick*="clearCatalogosData"]');
+  if (btnClearCat) {
+    btnClearCat.style.display = canEditCatalogos ? 'inline-flex' : 'none';
+  }
+
+  // Botones de crear nota según rol
+  const btnNewFisica = document.getElementById('btn-new-nota-fisica');
+  const btnNewFinanciera = document.getElementById('btn-new-nota-financiera');
+  const canCreateFisica = ['Administrador', 'Gerente', 'Vendedor'].includes(rol);
+  const canCreateFinanciera = ['Administrador', 'Gerente', 'Vendedor'].includes(rol);
+  if (btnNewFisica) {
+    if (canCreateFisica) btnNewFisica.classList.remove('hidden');
+    else btnNewFisica.classList.add('hidden');
+  }
+  if (btnNewFinanciera) {
+    if (canCreateFinanciera) btnNewFinanciera.classList.remove('hidden');
+    else btnNewFinanciera.classList.add('hidden');
+  }
+
+  // 2. Control de accesos de la barra de navegación según Rol y Obligaciones
+  const roleAllowedViews = {
+    'Administrador': ['dashboard', 'notas-fisicas', 'notas-financieras', 'lotes', 'presupuestos', 'sucursales', 'usuarios', 'catalogos', 'reportes', 'faltantes-picking'],
+    'Gerente': ['dashboard', 'notas-fisicas', 'notas-financieras', 'lotes', 'presupuestos', 'catalogos', 'reportes', 'faltantes-picking'],
+    'Almacen': ['dashboard', 'notas-fisicas', 'catalogos', 'faltantes-picking'],
+    'Contabilidad': ['dashboard', 'notas-fisicas', 'notas-financieras', 'catalogos', 'reportes', 'faltantes-picking'],
+    'Vendedor': ['dashboard', 'notas-fisicas', 'notas-financieras', 'presupuestos', 'catalogos']
+  };
+  const allowedSet = new Set(roleAllowedViews[rol] || roleAllowedViews['Vendedor']);
+
   const navLinks = document.querySelectorAll('.nav-link');
   navLinks.forEach(link => {
     const view = link.dataset.view;
-    let allowed = true;
+    let allowed = allowedSet.has(view);
 
-    // Sucursales y Usuarios son exclusivos del Administrador Universal
-    if (view === 'sucursales' || view === 'usuarios') {
-      if (rol !== 'Administrador') {
-        allowed = false;
-      }
+    if ((rol === 'Gerente' || rol === 'Vendedor') && !activaFinanciera) {
+      if (view === 'notas-financieras' || view === 'presupuestos') allowed = false;
     }
 
-    // Reportes, Presupuestos y Lotes son de Administrador y Gerente
-    if (view === 'reportes' || view === 'presupuestos' || view === 'lotes') {
-      if (rol !== 'Administrador' && rol !== 'Gerente') {
-        allowed = false;
-      }
-    }
-
-    // Faltantes Picking es exclusivo de Administrador, Gerente y Contabilidad
-    if (view === 'faltantes-picking') {
-      if (rol !== 'Administrador' && rol !== 'Gerente' && rol !== 'Contabilidad') {
-        allowed = false;
-      }
-    }
-
-    // Filtros específicos por AdminTipo de Administrador
     if (rol === 'Administrador') {
       if (adminTipo === 'Fisico') {
         if (view === 'notas-financieras' || view === 'presupuestos') allowed = false;
@@ -1461,12 +1579,6 @@ function applyRolePermissions() {
       link.parentElement.classList.add('hidden');
     }
   });
-
-  // 3. Activar botón de crear Notas Financieras
-  const btnNewFinanciera = document.getElementById('btn-new-nota-financiera');
-  if (btnNewFinanciera) {
-    btnNewFinanciera.classList.remove('hidden');
-  }
 }
 
 // --- NAVEGACIÓN SPA ---
@@ -1482,25 +1594,24 @@ function setupNavigation() {
 }
 
 function switchView(viewName) {
-  if (currentUser && currentUser.rol === 'Vendedor') {
-    if (viewName === 'presupuestos' || viewName === 'usuarios' || viewName === 'sucursales' || viewName === 'reportes' || viewName === 'lotes' || viewName === 'faltantes-picking') {
-      alert("Acceso denegado: El módulo seleccionado no está disponible para usuarios con rol Vendedor.");
+  if (currentUser && viewName !== 'notas-detail') {
+    const rol = currentUser.rol || 'Vendedor';
+    const roleAllowedViews = {
+      'Administrador': ['dashboard', 'notas-fisicas', 'notas-financieras', 'lotes', 'presupuestos', 'sucursales', 'usuarios', 'catalogos', 'reportes', 'faltantes-picking'],
+      'Gerente': ['dashboard', 'notas-fisicas', 'notas-financieras', 'lotes', 'presupuestos', 'catalogos', 'reportes', 'faltantes-picking'],
+      'Almacen': ['dashboard', 'notas-fisicas', 'catalogos', 'faltantes-picking'],
+      'Contabilidad': ['dashboard', 'notas-fisicas', 'notas-financieras', 'catalogos', 'reportes', 'faltantes-picking'],
+      'Vendedor': ['dashboard', 'notas-fisicas', 'notas-financieras', 'presupuestos', 'catalogos']
+    };
+    const allowedList = roleAllowedViews[rol] || roleAllowedViews['Vendedor'];
+    if (!allowedList.includes(viewName)) {
+      alert(`Acceso denegado: El módulo seleccionado no está disponible para el rol ${rol}.`);
       viewName = 'dashboard';
-    }
-  }
-
-  if (currentUser && currentUser.rol !== 'Administrador') {
-    const userSuc = sucursales.find(s => s.id === currentUser.sucursalId);
-    const activaFinanciera = userSuc ? userSuc.activaFinanciera : false;
-    const financialViews = ['notas-financieras', 'presupuestos'];
-    
-    if (!activaFinanciera) {
-      if (financialViews.includes(viewName)) {
+    } else if (rol === 'Gerente' || rol === 'Vendedor') {
+      const userSuc = sucursales.find(s => s.id === currentUser.sucursalId);
+      const activaFinanciera = userSuc ? !!userSuc.activaFinanciera : true;
+      if (!activaFinanciera && (viewName === 'notas-financieras' || viewName === 'presupuestos')) {
         alert("Acceso denegado: Tu sucursal no tiene habilitado el módulo financiero.");
-        viewName = 'dashboard';
-      }
-      if (currentUser.rol === 'Gerente' && viewName === 'notas-fisicas') {
-        alert("Acceso denegado: Tu sucursal no tiene habilitado el módulo físico.");
         viewName = 'dashboard';
       }
     }
@@ -1517,13 +1628,11 @@ function switchView(viewName) {
     targetSection.classList.remove('hidden');
   }
 
-  // Al seleccionar Módulo de Notas Físicas o Financieras, abrir de inmediato el formulario de captura
+  // Al seleccionar Módulo de Notas Físicas o Financieras, mostrar la lista de notas (con botón "+ Crear Nota")
   if (viewName === 'notas-fisicas') {
-    showSubView('notas-fisicas', 'form');
-    resetPhysicalForm();
+    renderNotasFisicasList();
   } else if (viewName === 'notas-financieras') {
-    showSubView('notas-financieras', 'form');
-    resetFinancialForm();
+    renderNotasFinancierasList();
   }
 
   // Actualizar link activo en sidebar
@@ -1579,14 +1688,12 @@ function refreshCurrentView() {
       initDashboard();
       break;
     case 'notas-fisicas':
-      // NO resetear el formulario aquí — solo refrescar dropdowns.
-      // El reset solo ocurre al navegar hacia la vista (switchView) o
-      // al hacer clic en "Nueva Nota".
       if (typeof refreshAllModuleDropdowns === 'function') refreshAllModuleDropdowns();
+      renderNotasFisicasTableOnly();
       break;
     case 'notas-financieras':
-      // Igual: NO resetear el formulario financiero en cada refresh.
       if (typeof refreshAllModuleDropdowns === 'function') refreshAllModuleDropdowns();
+      renderNotasFinancierasTableOnly();
       break;
     case 'presupuestos':
       renderPresupuestosGrid();
@@ -1601,6 +1708,9 @@ function refreshCurrentView() {
       renderCatalogosTables();
       break;
     case 'reportes':
+      if (typeof refreshAllModuleDropdowns === 'function') refreshAllModuleDropdowns();
+      if (typeof generateReport === 'function') generateReport();
+      if (typeof calculateAndRenderStatistics === 'function') calculateAndRenderStatistics();
       break;
     case 'faltantes-picking':
       setupFaltantesPickingView();
@@ -1646,11 +1756,13 @@ function matchSellerIdOrName(idOrName1, idOrName2) {
 }
 
 function getBudgetConsumedForSeller(vendId, mes) {
-  const targetMes = mes || new Date().toISOString().substring(0, 7);
+  const targetMes = mes || localMonthStr();
   return notas
-    .filter(n => n.tipo === 'Financiero' && getNotaDisplayState(n) !== 'Cancelada' && getNotaDisplayState(n) !== 'Borrador')
+    .filter(n => isNoteTipoMatch(n, 'Financiero'))
     .filter(n => {
-      const isSellerMatch = matchSellerIdOrName(n.vendedorId, vendId) || matchSellerIdOrName(n.firmas?.elaboro, vendId) || matchSellerIdOrName(n.id_vendedor, vendId);
+      const st = getNotaDisplayState(n);
+      if (st === 'Cancelada' || st === 'Borrador' || st === 'Pendiente' || st === 'Rechazada') return false;
+      const isSellerMatch = isNoteVendorMatch(n, vendId);
       if (!isSellerMatch) return false;
       const notaMes = (n.fechaEmision || '').substring(0, 7);
       return notaMes === targetMes;
@@ -1659,69 +1771,65 @@ function getBudgetConsumedForSeller(vendId, mes) {
 }
 
 function initDashboard() {
-  // Obtener fecha de hoy y rangos
-  const hoyStr = new Date().toISOString().split('T')[0]; // "2026-07-13"
-  const hoyDt = new Date(hoyStr);
+  if (!currentUser) return;
+  const hoyStr = localDateStr();
+  const hoyDt = new Date(hoyStr + 'T00:00:00');
   const currentMes = hoyStr.substring(0, 7);
   
   // Filtrar notas según el rol del usuario logueado
   let notasFiltradas = [...notas];
   
-  // Vendedores solo ven sus propias notas
   if (currentUser.rol === 'Vendedor') {
-    notasFiltradas = notasFiltradas.filter(n => matchSellerIdOrName(n.firmas?.elaboro, currentUser.id) || matchSellerIdOrName(n.vendedorId, currentUser.id) || matchSellerIdOrName(n.vendedorId, currentUser.nombre));
-    
-    // Info vendedor en pantalla
+    notasFiltradas = notasFiltradas.filter(n => isNoteVendorMatch(n, currentUser.id) || isNoteVendorMatch(n, currentUser.nombre));
     document.getElementById('dash-vendedor-info').innerHTML = `
       <i class="fa-solid fa-user-tag"></i> Vendedor: <strong>${currentUser.nombre}</strong> (Tus Notas)
     `;
-    
-    // Mostrar botones rápidos para crear notas en el Dashboard (ya que no tiene sidebar)
     const cardTitle = document.querySelector('#view-dashboard .card-title');
     if (cardTitle) {
       cardTitle.innerHTML = `
         <span>Mis Notas Recientes</span>
         <div style="display:flex; gap:8px;">
-          <button class="btn btn-primary btn-sm" onclick="switchView('notas-fisicas'); showSubView('notas-fisicas', 'form');"><i class="fa-solid fa-plus"></i> Nota Física</button>
-          <button class="btn btn-warning btn-sm" onclick="switchView('notas-financieras'); showSubView('notas-financieras', 'form');"><i class="fa-solid fa-plus"></i> Nota Financiera</button>
+          <button class="btn btn-primary btn-sm" onclick="switchView('notas-fisicas'); resetPhysicalForm(); showSubView('notas-fisicas', 'form');"><i class="fa-solid fa-plus"></i> Nota Física</button>
+          <button class="btn btn-warning btn-sm" onclick="switchView('notas-financieras'); resetFinancialForm(); showSubView('notas-financieras', 'form');"><i class="fa-solid fa-plus"></i> Nota Financiera</button>
         </div>
       `;
     }
   } else {
     document.getElementById('dash-vendedor-info').innerHTML = '';
-    
-    // Gerentes ven solo de su propia sucursal
-    if (currentUser.rol === 'Gerente') {
-      notasFiltradas = notasFiltradas.filter(n => n.sucursalId === currentUser.sucursalId);
+    if (currentUser.rol === 'Gerente' || currentUser.rol === 'Almacen') {
+      notasFiltradas = notasFiltradas.filter(n => !n.sucursalId || n.sucursalId === currentUser.sucursalId);
+    }
+    if (currentUser.rol === 'Almacen') {
+      notasFiltradas = notasFiltradas.filter(n => isNoteTipoMatch(n, 'Fisico'));
     }
   }
 
   // Filtrar por período de tiempo (Día, Semana, Mes)
   notasFiltradas = notasFiltradas.filter(n => {
-    const notaDate = new Date(n.fechaEmision);
+    const fEmision = String(n.fechaEmision || '').substring(0, 10);
+    if (!fEmision) return true;
+    const notaDate = new Date(fEmision + 'T00:00:00');
     if (dashboardPeriod === 'dia') {
-      return n.fechaEmision === hoyStr;
+      return fEmision === hoyStr;
     } else if (dashboardPeriod === 'semana') {
       const diffTime = Math.abs(hoyDt - notaDate);
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
       return diffDays <= 7;
     } else {
-      // Mes
-      return n.fechaEmision.startsWith(hoyStr.substring(0, 7));
+      return fEmision.startsWith(currentMes);
     }
   });
 
-  // Totales
-  document.getElementById('dash-total-notas').textContent = notasFiltradas.filter(n => getNotaDisplayState(n) !== 'Cancelada').length;
+  // Totales (excluyendo canceladas de montos y conteos activos)
+  const notasActivas = notasFiltradas.filter(n => getNotaDisplayState(n) !== 'Cancelada');
+  document.getElementById('dash-total-notas').textContent = notasActivas.length;
   
-  // Total Notas Físicas
-  const countFisicas = notasFiltradas.filter(n => isNoteTipoMatch(n, 'Fisico') && getNotaDisplayState(n) !== 'Cancelada').length;
+  const countFisicas = notasActivas.filter(n => isNoteTipoMatch(n, 'Fisico')).length;
   document.getElementById('dash-total-fisicas').textContent = countFisicas;
 
-  // Total financiera acumulada en el periodo
-  const totalFin = notasFiltradas
-    .filter(n => isNoteTipoMatch(n, 'Financiero') && getNotaDisplayState(n) !== 'Cancelada')
-    .reduce((sum, n) => sum + (n.total || 0), 0);
+  const totalFin = notasActivas
+    .filter(n => isNoteTipoMatch(n, 'Financiero'))
+    .reduce((sum, n) => sum + (parseFloat(n.total) || 0), 0);
   document.getElementById('dash-total-financieras').textContent = formatCurrency(totalFin);
 
   // Presupuesto disponible en Dashboard según el rol del usuario
@@ -1741,11 +1849,9 @@ function initDashboard() {
     pptoLabelText = `Ppto. ${firstName} Disponible`;
 
     const limite = ppto ? (parseFloat(ppto.limite) || 0) : 0;
-    const consumidoReal = getBudgetConsumedForSeller(targetVendId, currentMes);
-    const consumidoTotal = Math.max(ppto ? (parseFloat(ppto.consumido) || 0) : 0, consumidoReal);
+    const consumidoTotal = getBudgetConsumedForSeller(targetVendId, currentMes);
     pptoVal = Math.max(0, limite - consumidoTotal);
   } else {
-    // Para Administrador y Gerente: Sumar el presupuesto global disponible de todos los vendedores
     let targetVends = vendedores.filter(v => !v.eliminado);
     if (currentUser.rol === 'Gerente') {
       targetVends = targetVends.filter(v => v.sucursalId === currentUser.sucursalId);
@@ -1759,8 +1865,7 @@ function initDashboard() {
         if (sellerPptos.length > 0) p = sellerPptos[sellerPptos.length - 1];
       }
       const limite = p ? (parseFloat(p.limite) || 0) : 0;
-      const consumidoReal = getBudgetConsumedForSeller(v.id, currentMes);
-      const consumidoTotal = Math.max(p ? (parseFloat(p.consumido) || 0) : 0, consumidoReal);
+      const consumidoTotal = getBudgetConsumedForSeller(v.id, currentMes);
       const disp = Math.max(0, limite - consumidoTotal);
       return sum + disp;
     }, 0);
@@ -1787,8 +1892,7 @@ function initDashboard() {
     if (cardSellerBudget) {
       cardSellerBudget.classList.remove('hidden');
       const limite = ppto ? (parseFloat(ppto.limite) || 0) : 0;
-      const consumidoReal = getBudgetConsumedForSeller(targetVendId, currentMes);
-      const consumidoTotal = Math.max(ppto ? (parseFloat(ppto.consumido) || 0) : 0, consumidoReal);
+      const consumidoTotal = getBudgetConsumedForSeller(targetVendId, currentMes);
       const disponible = Math.max(0, limite - consumidoTotal);
       let pct = 0;
       if (limite > 0) {
@@ -1856,8 +1960,7 @@ function initDashboard() {
             }
 
             const limite = ppto ? (parseFloat(ppto.limite) || 0) : 0;
-            const consumidoReal = getBudgetConsumedForSeller(v.id, currentMes);
-            const consumidoTotal = Math.max(ppto ? (parseFloat(ppto.consumido) || 0) : 0, consumidoReal);
+            const consumidoTotal = getBudgetConsumedForSeller(v.id, currentMes);
             const disponible = Math.max(0, limite - consumidoTotal);
             let pct = 0;
             if (limite > 0) {
@@ -1905,33 +2008,42 @@ function initDashboard() {
     if (cardAdminBudget) cardAdminBudget.classList.add('hidden');
   }
 
-  // Tabla recientes
+  // Tabla recientes (incluye canceladas para visibilidad inmediata y botón Cancelar directo)
   const tbody = document.querySelector('#table-recent-notas tbody');
   tbody.innerHTML = '';
   
-  const recientes = notasFiltradas.filter(n => getNotaDisplayState(n) !== 'Cancelada').sort((a, b) => new Date(b.fechaEmision) - new Date(a.fechaEmision)).slice(0, 5);
+  const recientes = [...notasFiltradas]
+    .sort((a, b) => (parseInt(b.folio) || 0) - (parseInt(a.folio) || 0) || String(b.fechaEmision || '').localeCompare(String(a.fechaEmision || '')))
+    .slice(0, 8);
   
   if (recientes.length === 0) {
     tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding:15px; color:var(--text-muted);">No hay notas registradas para este filtro</td></tr>`;
-    return;
+  } else {
+    const canCancel = currentUser && (currentUser.rol === 'Administrador' || currentUser.rol === 'Gerente');
+    recientes.forEach(n => {
+      const suc = sucursales.find(s => s.id === n.sucursalId);
+      const cli = clientes.find(c => c.id === n.clienteId);
+      const st = getNotaDisplayState(n);
+      const isCancelled = st === 'Cancelada';
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><strong>${n.folio}-${n.serie}</strong></td>
+        <td>${isNoteTipoMatch(n, 'Fisico') ? '<i class="fa-solid fa-box text-muted"></i> Físico' : '<i class="fa-solid fa-coins text-warning"></i> Financiero'}</td>
+        <td>${suc ? suc.nombre : 'N/A'}</td>
+        <td>${cli ? cli.nombre : (n.clienteNombre || 'N/A')}</td>
+        <td>${n.fechaEmision}</td>
+        <td><strong style="${isCancelled ? 'text-decoration:line-through; color:#94a3b8;' : ''}">${formatCurrency(n.total)}</strong></td>
+        <td><span class="badge badge-${st.toLowerCase()}">${st}</span></td>
+        <td>
+          <div style="display:flex; gap:4px;">
+            <button class="btn btn-secondary btn-sm" onclick="viewNotaDetail('${n.id}')">Ver</button>
+            ${canCancel && !isCancelled ? `<button class="btn btn-danger btn-sm" onclick="cancelarNota('${n.id}')" title="Cancelar Nota"><i class="fa-solid fa-ban"></i></button>` : ''}
+          </div>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
   }
-
-  recientes.forEach(n => {
-    const suc = sucursales.find(s => s.id === n.sucursalId);
-    const cli = clientes.find(c => c.id === n.clienteId);
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td><strong>${n.folio}-${n.serie}</strong></td>
-      <td>${n.tipo === 'Fisico' ? '<i class="fa-solid fa-box text-muted"></i> Físico' : '<i class="fa-solid fa-coins text-warning"></i> Financiero'}</td>
-      <td>${suc ? suc.nombre : 'N/A'}</td>
-      <td>${cli ? cli.nombre : 'N/A'}</td>
-      <td>${n.fechaEmision}</td>
-      <td><strong>${formatCurrency(n.total)}</strong></td>
-      <td><span class="badge badge-${getNotaDisplayState(n).toLowerCase()}">${getNotaDisplayState(n)}</span></td>
-      <td><button class="btn btn-secondary btn-sm" onclick="viewNotaDetail('${n.id}')">Ver</button></td>
-    `;
-    tbody.appendChild(tr);
-  });
 
   // Renderizar las 3 Gráficas Interactivas de Pie (Inteligencia de Negocio)
   renderDashboardPieCharts(notasFiltradas);
@@ -1991,13 +2103,9 @@ function renderPieFisicasChart(activeNotas) {
   });
 
   let sortedItems = Object.values(countsMap).sort((a, b) => b.total - a.total).slice(0, 6);
-  if (sortedItems.length === 0) {
-    sortedItems = [
-      { nombre: 'Abarrotes El Zorro', total: 40 },
-      { nombre: 'Supermercados del Norte', total: 30 },
-      { nombre: 'Comercializadora San José', total: 20 },
-      { nombre: 'Otros Clientes', total: 10 }
-    ];
+  const isEmpty = sortedItems.length === 0;
+  if (isEmpty) {
+    sortedItems = [{ nombre: 'Sin registros en el período', total: 100 }];
     totalGlobal = 100;
   }
 
@@ -2013,7 +2121,7 @@ function renderPieFisicasChart(activeNotas) {
       labels: labels,
       datasets: [{
         data: dataPercentages,
-        backgroundColor: chartColorsPalette.slice(0, labels.length),
+        backgroundColor: isEmpty ? ['#cbd5e1'] : chartColorsPalette.slice(0, labels.length),
         borderWidth: 2,
         borderColor: '#ffffff'
       }]
@@ -2026,7 +2134,7 @@ function renderPieFisicasChart(activeNotas) {
         tooltip: {
           callbacks: {
             label: function (context) {
-              return ` ${context.label}: ${context.raw}% del total físico`;
+              return isEmpty ? ` Sin datos registrados` : ` ${context.label}: ${context.raw}% del total físico`;
             }
           }
         }
@@ -2040,7 +2148,7 @@ function renderPieFinancierasChart(activeNotas) {
   if (!canvasEl) return;
 
   const mode = document.getElementById('dash-pie-financieras-mode')?.value || 'clientes';
-  const financieras = activeNotas.filter(n => n.tipo === 'Financiero');
+  const financieras = activeNotas.filter(n => isNoteTipoMatch(n, 'Financiero'));
 
   const countsMap = {};
   let totalGlobal = 0;
@@ -2064,13 +2172,9 @@ function renderPieFinancierasChart(activeNotas) {
   });
 
   let sortedItems = Object.values(countsMap).sort((a, b) => b.total - a.total).slice(0, 6);
-  if (sortedItems.length === 0) {
-    sortedItems = [
-      { nombre: 'Abarrotes El Zorro', total: 45 },
-      { nombre: 'Supermercados del Norte', total: 30 },
-      { nombre: 'Comercializadora San José', total: 15 },
-      { nombre: 'Otros', total: 10 }
-    ];
+  const isEmpty = sortedItems.length === 0;
+  if (isEmpty) {
+    sortedItems = [{ nombre: 'Sin registros en el período', total: 100 }];
     totalGlobal = 100;
   }
 
@@ -2086,7 +2190,7 @@ function renderPieFinancierasChart(activeNotas) {
       labels: labels,
       datasets: [{
         data: dataPercentages,
-        backgroundColor: chartColorsPalette.slice(2, 2 + labels.length),
+        backgroundColor: isEmpty ? ['#cbd5e1'] : chartColorsPalette.slice(2, 2 + labels.length),
         borderWidth: 2,
         borderColor: '#ffffff'
       }]
@@ -2099,7 +2203,7 @@ function renderPieFinancierasChart(activeNotas) {
         tooltip: {
           callbacks: {
             label: function (context) {
-              return ` ${context.label}: ${context.raw}% del total financiero`;
+              return isEmpty ? ` Sin datos registrados` : ` ${context.label}: ${context.raw}% del total financiero`;
             }
           }
         }
@@ -2112,7 +2216,7 @@ function renderPieProductosChart(activeNotas) {
   const canvasEl = document.getElementById('graficaPieProductos');
   if (!canvasEl) return;
 
-  const fisicas = activeNotas.filter(n => n.tipo === 'Fisico');
+  const fisicas = activeNotas.filter(n => isNoteTipoMatch(n, 'Fisico'));
   const prodMap = {};
   let totalCant = 0;
 
@@ -2129,14 +2233,10 @@ function renderPieProductosChart(activeNotas) {
   });
 
   let sortedProds = Object.values(prodMap).sort((a, b) => b.cantidad - a.cantidad).slice(0, 5);
-  if (sortedProds.length === 0) {
-    sortedProds = [
-      { nombre: 'Aceite Vegetal 1L', cantidad: 50 },
-      { nombre: 'Arroz Súper Extra 1kg', cantidad: 30 },
-      { nombre: 'Frijol Negro 1kg', cantidad: 20 },
-      { nombre: 'Harina de Trigo 1kg', cantidad: 10 }
-    ];
-    totalCant = 110;
+  const isEmpty = sortedProds.length === 0;
+  if (isEmpty) {
+    sortedProds = [{ nombre: 'Sin devoluciones registradas', cantidad: 100 }];
+    totalCant = 100;
   }
 
   const labels = sortedProds.map(item => item.nombre);
@@ -2151,7 +2251,7 @@ function renderPieProductosChart(activeNotas) {
       labels: labels,
       datasets: [{
         data: dataPercentages,
-        backgroundColor: ['#dc2626', '#b45309', '#0284c7', '#16a34a', '#8b5cf6'],
+        backgroundColor: isEmpty ? ['#cbd5e1'] : ['#dc2626', '#b45309', '#0284c7', '#16a34a', '#8b5cf6'],
         borderWidth: 2,
         borderColor: '#ffffff'
       }]
@@ -2164,7 +2264,7 @@ function renderPieProductosChart(activeNotas) {
         tooltip: {
           callbacks: {
             label: function (context) {
-              return ` ${context.label}: ${context.raw}% de devoluciones`;
+              return isEmpty ? ` Sin datos registrados` : ` ${context.label}: ${context.raw}% de devoluciones`;
             }
           }
         }
@@ -2251,29 +2351,36 @@ document.addEventListener('DOMContentLoaded', () => {
 function renderNotasFisicasList() {
   if (!currentUser) return;
   showSubView('notas-fisicas', 'list');
+  renderNotasFisicasTableOnly();
+}
+
+function renderNotasFisicasTableOnly() {
+  if (!currentUser) return;
   const tbody = document.querySelector('#table-notas-fisicas tbody');
   if (!tbody) return;
   tbody.innerHTML = '';
   
   let notasFis = notas.filter(n => isNoteTipoMatch(n, 'Fisico'));
 
-  // Interacción multilateral: Vendedores y Gerentes ven las notas de su sucursal o creadas por ellos
-  if (currentUser.rol === 'Gerente' || currentUser.rol === 'Vendedor') {
-    notasFis = notasFis.filter(n => !n.sucursalId || n.sucursalId === currentUser.sucursalId || (n.firmas && n.firmas.elaboro === currentUser.id));
+  if (currentUser.rol === 'Vendedor') {
+    notasFis = notasFis.filter(n => isNoteVendorMatch(n, currentUser.id) || isNoteVendorMatch(n, currentUser.nombre));
+  } else if (currentUser.rol === 'Gerente' || currentUser.rol === 'Almacen') {
+    notasFis = notasFis.filter(n => !n.sucursalId || n.sucursalId === currentUser.sucursalId);
   }
 
   // Filtros de búsqueda (Cliente y Fecha)
-  const searchCli = document.getElementById('filter-nf-cliente').value.toLowerCase().trim();
-  const searchFecha = document.getElementById('filter-nf-fecha').value;
+  const searchCli = (document.getElementById('filter-nf-cliente')?.value || '').toLowerCase().trim();
+  const searchFecha = document.getElementById('filter-nf-fecha')?.value || '';
 
   if (searchCli) {
     notasFis = notasFis.filter(n => {
       const cli = clientes.find(c => c.id === n.clienteId);
-      return cli && cli.nombre.toLowerCase().includes(searchCli);
+      const nom = cli ? `${cli.codigoInterno || ''} ${cli.nombre || ''}` : (n.clienteNombre || '');
+      return nom.toLowerCase().includes(searchCli);
     });
   }
   if (searchFecha) {
-    notasFis = notasFis.filter(n => n.fechaEmision === searchFecha);
+    notasFis = notasFis.filter(n => String(n.fechaEmision || '').substring(0, 10) === searchFecha);
   }
   
   if (notasFis.length === 0) {
@@ -2281,25 +2388,30 @@ function renderNotasFisicasList() {
     return;
   }
 
+  const canCancel = currentUser.rol === 'Administrador' || currentUser.rol === 'Gerente';
+
   notasFis.forEach(n => {
     const suc = sucursales.find(s => s.id === n.sucursalId);
     const cli = clientes.find(c => c.id === n.clienteId);
     const ope = operadores.find(o => o.id === n.operadorId);
+    const st = getNotaDisplayState(n);
+    const isCancelled = st === 'Cancelada';
     
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><strong>${n.folio}-${n.serie}</strong></td>
       <td>${suc ? suc.nombre : 'N/A'}</td>
-      <td>${cli ? `[${cli.codigoInterno}] ${cli.nombre}` : 'N/A'}</td>
+      <td>${cli ? `[${cli.codigoInterno}] ${cli.nombre}` : (n.clienteNombre || 'N/A')}</td>
       <td>${n.factura}</td>
-      <td>${ope ? ope.nombre : 'N/A'}</td>
-      <td>${n.fechaAplicacion}</td>
-      <td><strong>${formatCurrency(n.total)}</strong></td>
-      <td><span class="badge badge-${getNotaDisplayState(n).toLowerCase()}">${getNotaDisplayState(n)}</span></td>
+      <td>${ope ? ope.nombre : (n.operadorNombre || 'N/A')}</td>
+      <td>${n.fechaAplicacion || n.fechaEmision}</td>
+      <td><strong style="${isCancelled ? 'text-decoration:line-through; color:#94a3b8;' : ''}">${formatCurrency(n.total)}</strong></td>
+      <td><span class="badge badge-${st.toLowerCase()}">${st}</span></td>
       <td>
         <div style="display:flex; gap:6px;">
           <button class="btn btn-secondary btn-sm" onclick="viewNotaDetail('${n.id}')"><i class="fa-solid fa-eye"></i> Ver</button>
           <button class="btn btn-primary btn-sm" onclick="printNotaFormat('${n.id}')"><i class="fa-solid fa-print"></i></button>
+          ${canCancel && !isCancelled ? `<button class="btn btn-danger btn-sm" onclick="cancelarNota('${n.id}')" title="Cancelar Nota"><i class="fa-solid fa-ban"></i></button>` : ''}
         </div>
       </td>
     `;
@@ -2406,7 +2518,7 @@ function resetPhysicalForm() {
   const form = document.getElementById('form-nota-fisica');
   form.reset();
   
-  const hoy = new Date().toISOString().split('T')[0];
+  const hoy = localDateStr();
   document.getElementById('nf-fecha-emision').value = hoy;
   document.getElementById('nf-fecha-aplicacion').value = hoy;
 
@@ -2423,9 +2535,15 @@ function resetPhysicalForm() {
     if (el) el.value = '';
   }
 
-  // Auto-seleccionar sucursal de vendedor/gerente logueado
-  if (currentUser.sucursalId) {
+  // Auto-seleccionar sucursal y vendedor de usuario logueado
+  if (currentUser && currentUser.sucursalId) {
     document.getElementById('nf-sucursal').value = currentUser.sucursalId;
+  }
+  if (currentUser && currentUser.rol === 'Vendedor') {
+    const myVend = vendedores.find(v => v.userId === currentUser.id || matchSellerIdOrName(v.id, currentUser.id) || matchSellerIdOrName(v.nombre, currentUser.nombre));
+    if (myVend) {
+      document.getElementById('nf-vendedor').value = myVend.id;
+    }
   }
 
   document.getElementById('nf-foto-input').value = '';
@@ -2732,6 +2850,7 @@ async function submitPhysicalNote(isDraft) {
 
   const nuevaNota = {
     id: "N" + folio,
+    uid: 'uid_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
     folio: folio,
     serie: serie,
     tipo: "Fisico",
@@ -2756,7 +2875,7 @@ async function submitPhysicalNote(isDraft) {
     firmas: {
       elaboro: currentUser.rol === 'Vendedor' || currentUser.rol === 'Administrador' ? currentUser.id : null,
       almacen: null,
-      autorizo: null,
+      autorizo: (currentUser.rol === 'Gerente' || currentUser.rol === 'Administrador') ? currentUser.id : null,
       cliente: null
     },
     estado_autorizacion: isDraft ? 'Borrador' : 'Autorizada',
@@ -2766,51 +2885,51 @@ async function submitPhysicalNote(isDraft) {
 
   notas.push(nuevaNota);
   saveData('ca_notas', notas);
-  // Guardar en SQL Server y esperar confirmacion
   try {
     await pushToSQLServer('notas', nuevaNota);
   } catch(e) {
     console.warn('[submitPhysicalNote] Error SQL:', e);
   }
-  // Refrescar desde SQL Server para sincronizar todos los dispositivos
   await fetchAPIData();
 
   alert(isDraft ? "Borrador guardado." : "Nota de crédito física emitida.");
-
-  if (currentUser.rol === 'Vendedor') {
-    switchView('dashboard');
-  } else {
-    renderNotasFisicasList();
-  }
+  renderNotasFisicasList();
 }
 
 // --- 3. VIEW: NOTAS FINANCIERAS CON DESCUENTOS EN CASCADA ---
 function renderNotasFinancierasList() {
   if (!currentUser) return;
   showSubView('notas-financieras', 'list');
+  renderNotasFinancierasTableOnly();
+}
+
+function renderNotasFinancierasTableOnly() {
+  if (!currentUser) return;
   const tbody = document.querySelector('#table-notas-financieras tbody');
   if (!tbody) return;
   tbody.innerHTML = '';
   
   let notasFin = notas.filter(n => isNoteTipoMatch(n, 'Financiero'));
 
-  // Interacción multilateral: Vendedores y Gerentes ven las notas de su sucursal o creadas por ellos
-  if (currentUser.rol === 'Gerente' || currentUser.rol === 'Vendedor') {
-    notasFin = notasFin.filter(n => !n.sucursalId || n.sucursalId === currentUser.sucursalId || (n.firmas && n.firmas.elaboro === currentUser.id));
+  if (currentUser.rol === 'Vendedor') {
+    notasFin = notasFin.filter(n => isNoteVendorMatch(n, currentUser.id) || isNoteVendorMatch(n, currentUser.nombre));
+  } else if (currentUser.rol === 'Gerente') {
+    notasFin = notasFin.filter(n => !n.sucursalId || n.sucursalId === currentUser.sucursalId);
   }
 
   // Filtros de búsqueda (Cliente y Fecha)
-  const searchCli = document.getElementById('filter-nfi-cliente').value.toLowerCase().trim();
-  const searchFecha = document.getElementById('filter-nfi-fecha').value;
+  const searchCli = (document.getElementById('filter-nfi-cliente')?.value || '').toLowerCase().trim();
+  const searchFecha = document.getElementById('filter-nfi-fecha')?.value || '';
 
   if (searchCli) {
     notasFin = notasFin.filter(n => {
       const cli = clientes.find(c => c.id === n.clienteId);
-      return cli && cli.nombre.toLowerCase().includes(searchCli);
+      const nom = cli ? `${cli.codigoInterno || ''} ${cli.nombre || ''}` : (n.clienteNombre || '');
+      return nom.toLowerCase().includes(searchCli);
     });
   }
   if (searchFecha) {
-    notasFin = notasFin.filter(n => n.fechaEmision === searchFecha);
+    notasFin = notasFin.filter(n => String(n.fechaEmision || '').substring(0, 10) === searchFecha);
   }
   
   if (notasFin.length === 0) {
@@ -2818,25 +2937,30 @@ function renderNotasFinancierasList() {
     return;
   }
 
+  const canCancel = currentUser.rol === 'Administrador' || currentUser.rol === 'Gerente';
+
   notasFin.forEach(n => {
     const suc = sucursales.find(s => s.id === n.sucursalId);
     const cli = clientes.find(c => c.id === n.clienteId);
+    const st = getNotaDisplayState(n);
+    const isCancelled = st === 'Cancelada';
     
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><strong>${n.folio}-${n.serie}</strong></td>
       <td>${suc ? suc.nombre : 'N/A'}</td>
-      <td>${cli ? `[${cli.codigoInterno}] ${cli.nombre}` : 'N/A'}</td>
+      <td>${cli ? `[${cli.codigoInterno}] ${cli.nombre}` : (n.clienteNombre || 'N/A')}</td>
       <td>${n.proveedor || 'N/A'}</td>
       <td>${n.factura}</td>
       <td>${n.descuentosEscalonados ? n.descuentosEscalonados.join('% + ') + '%' : 'N/A'}</td>
       <td>${formatCurrency(n.subtotal)}</td>
-      <td><strong>${formatCurrency(n.total)}</strong></td>
-      <td><span class="badge badge-${getNotaDisplayState(n).toLowerCase()}">${getNotaDisplayState(n)}</span></td>
+      <td><strong style="${isCancelled ? 'text-decoration:line-through; color:#94a3b8;' : ''}">${formatCurrency(n.total)}</strong></td>
+      <td><span class="badge badge-${st.toLowerCase()}">${st}</span></td>
       <td>
         <div style="display:flex; gap:6px;">
           <button class="btn btn-secondary btn-sm" onclick="viewNotaDetail('${n.id}')"><i class="fa-solid fa-eye"></i> Ver</button>
           <button class="btn btn-primary btn-sm" onclick="printNotaFormat('${n.id}')"><i class="fa-solid fa-print"></i></button>
+          ${canCancel && !isCancelled ? `<button class="btn btn-danger btn-sm" onclick="cancelarNota('${n.id}')" title="Cancelar Nota"><i class="fa-solid fa-ban"></i></button>` : ''}
         </div>
       </td>
     `;
@@ -2951,7 +3075,7 @@ function resetFinancialForm() {
   tempFinancialAuthorized = false;
   document.getElementById('nfi-auth-status-msg').textContent = '';
 
-  const hoy = new Date().toISOString().split('T')[0];
+  const hoy = localDateStr();
   document.getElementById('nfi-fecha-emision').value = hoy;
   document.getElementById('nfi-fecha-aplicacion').value = hoy;
 
@@ -2972,8 +3096,14 @@ function resetFinancialForm() {
   document.getElementById('nfi-cliente-autocomplete-list').classList.add('hidden');
   document.getElementById('nfi-cliente-right-msg').textContent = '';
 
-  if (currentUser.sucursalId) {
+  if (currentUser && currentUser.sucursalId) {
     document.getElementById('nfi-sucursal').value = currentUser.sucursalId;
+  }
+  if (currentUser && currentUser.rol === 'Vendedor') {
+    const myVend = vendedores.find(v => v.userId === currentUser.id || matchSellerIdOrName(v.id, currentUser.id) || matchSellerIdOrName(v.nombre, currentUser.nombre));
+    if (myVend) {
+      document.getElementById('nfi-vendedor').value = myVend.id;
+    }
   }
 
   // Calcular siguiente Folio y Serie
@@ -2987,12 +3117,11 @@ function resetFinancialForm() {
 
 function updateBudgetInfoForm() {
   const vendId = document.getElementById('nfi-vendedor').value;
-  const mes = new Date().toISOString().substring(0, 7);
+  const mes = localMonthStr();
   
   const ppto = presupuestos.find(p => matchSellerIdOrName(p.vendedorId, vendId) && p.mes === mes);
   if (ppto) {
-    const consumidoReal = getBudgetConsumedForSeller(vendId, mes);
-    const consumidoTotal = Math.max(parseFloat(ppto.consumido) || 0, consumidoReal);
+    const consumidoTotal = getBudgetConsumedForSeller(vendId, mes);
     const disp = Math.max(0, (parseFloat(ppto.limite) || 0) - consumidoTotal);
     document.getElementById('nfi-budget-total').textContent = formatCurrency(ppto.limite);
     document.getElementById('nfi-budget-used').textContent = formatCurrency(consumidoTotal);
@@ -3045,11 +3174,11 @@ function validateFinancialBudgetAndClient() {
   const vendId = document.getElementById('nfi-vendedor').value;
   const sucId = document.getElementById('nfi-sucursal').value;
   const totalNota = parseFloat(document.getElementById('nfi-total-label').textContent) || 0;
-  const mes = new Date().toISOString().substring(0, 7);
+  const mes = localMonthStr();
   const fechaEmision = document.getElementById('nfi-fecha-emision').value;
   
   const cli = clientes.find(c => c.id === cliId);
-  const ppto = presupuestos.find(p => p.vendedorId === vendId && p.mes === mes);
+  const ppto = presupuestos.find(p => matchSellerIdOrName(p.vendedorId, vendId) && p.mes === mes);
   
   let requiereAutorizacion = false;
   let blockActive = false;
@@ -3076,7 +3205,8 @@ function validateFinancialBudgetAndClient() {
   }
 
   if (ppto) {
-    const disponible = ppto.limite - ppto.consumido;
+    const consumidoTotal = getBudgetConsumedForSeller(vendId, mes);
+    const disponible = Math.max(0, (parseFloat(ppto.limite) || 0) - consumidoTotal);
     if (totalNota > disponible) {
       requiereAutorizacion = true;
       if (ppto.bloquearExceso) {
@@ -3129,6 +3259,16 @@ async function submitFinancialNote(isDraft) {
   const motivo = document.getElementById('nfi-auth-motivo').value.trim();
 
   let esPendiente = false;
+  if (!isDraft && requiereAutorizacion) {
+    if (!motivo) {
+      alert("Debes escribir el motivo de la solicitud de autorización especial.");
+      document.getElementById('nfi-auth-motivo').focus();
+      return;
+    }
+    if (currentUser.rol !== 'Administrador' && currentUser.rol !== 'Gerente') {
+      esPendiente = true;
+    }
+  }
 
   const sucursalId = document.getElementById('nfi-sucursal').value;
   let clienteId = document.getElementById('nfi-cliente').value;
@@ -3183,7 +3323,7 @@ async function submitFinancialNote(isDraft) {
   const fechaEmision = document.getElementById('nfi-fecha-emision').value;
   const fechaAplicacion = document.getElementById('nfi-fecha-aplicacion').value;
   const claveInterna = document.getElementById('nfi-clave-interna').value;
-  const documentoFiscal = ''; // No longer needed
+  const documentoFiscal = '';
   const observaciones = document.getElementById('nfi-observaciones').value;
 
   const desc1 = parseFloat(document.getElementById('nfi-desc1').value) || 0;
@@ -3192,11 +3332,10 @@ async function submitFinancialNote(isDraft) {
 
   // Validaciones estrictas de presupuesto en emisión oficial
   const mes = fechaEmision.substring(0, 7);
-  const ppto = presupuestos.find(p => p.vendedorId === vendedorId && p.mes === mes);
-  const totalDescuento = total; // El total de la nota es el descuento mismo
+  const ppto = presupuestos.find(p => matchSellerIdOrName(p.vendedorId, vendedorId) && p.mes === mes);
+  const totalDescuento = total;
 
-  if (!isDraft && !esPendiente) {
-    // Validar si la sucursal tiene activaFinanciera
+  if (!isDraft) {
     const userSuc = sucursales.find(s => s.id === sucursalId);
     if (userSuc && !userSuc.activaFinanciera) {
       alert("No se puede emitir la nota: La sucursal seleccionada no tiene permisos para Notas Financieras.");
@@ -3208,12 +3347,14 @@ async function submitFinancialNote(isDraft) {
         alert("No se puede emitir la nota: La fecha de captura supera la fecha límite del presupuesto (" + ppto.fechaLimite + ").");
         return;
       }
-      const disponible = ppto.limite - ppto.consumido;
+      const consumidoActual = getBudgetConsumedForSeller(vendedorId, mes);
+      const disponible = Math.max(0, (parseFloat(ppto.limite) || 0) - consumidoActual);
       if (totalDescuento > disponible && ppto.bloquearExceso) {
         if (currentUser.rol === 'Administrador' || currentUser.rol === 'Gerente') {
           if (!confirm("El descuento excede el presupuesto disponible y el bloqueo de excedentes está activo. ¿Deseas autorizar esta excepción y emitir la nota?")) {
             return;
           }
+          esPendiente = false;
         } else {
           alert("No se puede emitir la nota: El monto de descuento (" + formatCurrency(totalDescuento) + ") supera el presupuesto disponible (" + formatCurrency(disponible) + ") y el bloqueo de excedentes está activo.");
           return;
@@ -3229,6 +3370,7 @@ async function submitFinancialNote(isDraft) {
 
   const nuevaNota = {
     id: "N" + folio,
+    uid: 'uid_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
     folio: folio,
     serie: serie,
     tipo: "Financiero",
@@ -3257,6 +3399,7 @@ async function submitFinancialNote(isDraft) {
     firmas: {
       elaboro: currentUser.id,
       almacen: null,
+      contabilidad: null,
       autorizo: (currentUser.rol === 'Gerente' || currentUser.rol === 'Administrador') && !esPendiente ? currentUser.id : null,
       cliente: null
     },
@@ -3265,11 +3408,10 @@ async function submitFinancialNote(isDraft) {
     esNueva: true
   };
 
-  // Restar de presupuesto si es oficial y NO está pendiente de aprobación (se resta al aprobarse)
   if (!isDraft && !esPendiente) {
     let pptoIdx = presupuestos.findIndex(p => matchSellerIdOrName(p.vendedorId, vendedorId) && p.mes === mes);
     if (pptoIdx !== -1) {
-      presupuestos[pptoIdx].consumido = (parseFloat(presupuestos[pptoIdx].consumido) || 0) + totalDescuento;
+      presupuestos[pptoIdx].consumido = getBudgetConsumedForSeller(vendedorId, mes) + totalDescuento;
     } else {
       presupuestos.push({
         vendedorId: vendedorId,
@@ -3285,13 +3427,11 @@ async function submitFinancialNote(isDraft) {
 
   notas.push(nuevaNota);
   saveData('ca_notas', notas);
-  // Guardar en SQL Server y esperar confirmacion
   try {
     await pushToSQLServer('notas', nuevaNota);
   } catch(e) {
     console.warn('[submitFinancialNote] Error SQL:', e);
   }
-  // Refrescar desde SQL Server para sincronizar todos los dispositivos
   await fetchAPIData();
 
   if (isDraft) {
@@ -3302,25 +3442,24 @@ async function submitFinancialNote(isDraft) {
     alert("Nota financiera emitida.");
   }
 
-  if (currentUser.rol === 'Vendedor') {
-    switchView('dashboard');
-  } else {
-    renderNotasFinancierasList();
-  }
+  renderNotasFinancierasList();
 }
 
 // --- 4. DETALLE DE NOTAS Y FIRMAS ---
-window.viewNotaDetail = function(notaId) {
-  const nota = notas.find(n => n.id === notaId);
+window.viewNotaDetail = function(notaId, keepView = false) {
+  const nota = notas.find(n => n.id === notaId || String(n.folio) === String(notaId));
   if (!nota) return;
 
-  currentDetailNotaId = notaId;
-  const isFisico = nota.tipo === 'Fisico';
+  currentDetailNotaId = nota.id;
+  const isFisico = isNoteTipoMatch(nota, 'Fisico');
   
-  switchView('notas-detail');
+  if (!keepView) {
+    switchView('notas-detail');
+  }
 
   // Cargar datos
-  document.getElementById('detail-title').innerHTML = `Nota de Crédito #${nota.folio}-${nota.serie} &nbsp; <span class="badge badge-${getNotaDisplayState(nota).toLowerCase()}">${getNotaDisplayState(nota)}</span>`;
+  const displaySt = getNotaDisplayState(nota);
+  document.getElementById('detail-title').innerHTML = `Nota de Crédito #${nota.folio}-${nota.serie} &nbsp; <span class="badge badge-${displaySt.toLowerCase()}">${displaySt}</span>`;
   document.getElementById('det-folio').textContent = `${nota.folio} - ${nota.serie}`;
   document.getElementById('det-tipo').textContent = isFisico ? 'Físico (Producto/Logística)' : 'Financiero (Descuento)';
   
@@ -3328,14 +3467,14 @@ window.viewNotaDetail = function(notaId) {
   document.getElementById('det-sucursal').textContent = suc ? suc.nombre : 'N/A';
   
   const cli = clientes.find(c => c.id === nota.clienteId);
-  document.getElementById('det-cliente').textContent = cli ? `[${cli.codigoInterno}] ${cli.nombre}` : 'N/A';
+  document.getElementById('det-cliente').textContent = cli ? `[${cli.codigoInterno}] ${cli.nombre}` : (nota.clienteNombre || 'N/A');
   
   document.getElementById('det-factura').textContent = nota.factura;
   document.getElementById('det-fecha-emision').textContent = nota.fechaEmision;
-  document.getElementById('det-fecha-aplicacion').textContent = nota.fechaAplicacion;
+  document.getElementById('det-fecha-aplicacion').textContent = nota.fechaAplicacion || nota.fechaEmision;
   
   const ven = vendedores.find(v => v.id === nota.vendedorId);
-  document.getElementById('det-vendedor').textContent = ven ? ven.nombre : 'N/A';
+  document.getElementById('det-vendedor').textContent = ven ? ven.nombre : (nota.operadorNombre || 'N/A');
   
   document.getElementById('det-ci').textContent = nota.claveInterna || 'N/A';
 
@@ -3350,7 +3489,7 @@ window.viewNotaDetail = function(notaId) {
     financialDetails.classList.add('hidden');
     
     const ope = operadores.find(o => o.id === nota.operadorId);
-    document.getElementById('det-chofer').textContent = ope ? `${ope.nombre} (${ope.puesto})` : 'N/A';
+    document.getElementById('det-chofer').textContent = ope ? `${ope.nombre} (${ope.puesto})` : (nota.operadorNombre || 'N/A');
 
     if (nota.incidenciaFoto) {
       containerFoto.classList.remove('hidden');
@@ -3367,7 +3506,7 @@ window.viewNotaDetail = function(notaId) {
     document.getElementById('det-proveedor').textContent = nota.proveedor || 'N/A';
     document.getElementById('det-subtotal').textContent = (nota.subtotal || 0).toFixed(2);
     document.getElementById('det-desctos').textContent = nota.descuentosEscalonados ? nota.descuentosEscalonados.join('% + ') + '%' : 'N/A';
-    document.getElementById('det-importe-descto').textContent = (nota.importeDescuento || 0).toFixed(2);
+    document.getElementById('det-importe-descto').textContent = (nota.importeDescuento || nota.total || 0).toFixed(2);
 
     const specialBadge = document.getElementById('det-special-badge');
     const specialMotive = document.getElementById('det-special-motive');
@@ -3381,7 +3520,7 @@ window.viewNotaDetail = function(notaId) {
     }
   }
 
-  document.getElementById('det-razon-texto').textContent = CAUSAS_MAP[nota.causaMarcar] || 'No marcada / Varios';
+  document.getElementById('det-razon-texto').textContent = CAUSAS_MAP[nota.causaMarcar] || nota.causaMarcar || 'No marcada / Varios';
 
   // Tabla conceptos
   const tbody = document.querySelector('#table-det-items tbody');
@@ -3390,7 +3529,7 @@ window.viewNotaDetail = function(notaId) {
     const tr = document.createElement('tr');
     const hasIva = p.hasIva !== undefined ? p.hasIva : true;
     const hasIeps = p.hasIeps !== undefined ? p.hasIeps : false;
-    const subRow = p.cantidad * p.unitario;
+    const subRow = (parseFloat(p.cantidad) || 0) * (parseFloat(p.unitario) || 0);
     const ivaVal = hasIva ? subRow * 0.16 : 0;
     const iepsVal = hasIeps ? subRow * 0.08 : 0;
     const computedImporte = subRow + ivaVal + iepsVal;
@@ -3421,7 +3560,7 @@ window.viewNotaDetail = function(notaId) {
     if (subRow) subRow.classList.remove('hidden');
     if (ivaRow) ivaRow.classList.remove('hidden');
     if (iepsRow) iepsRow.classList.remove('hidden');
-    if (subVal) subVal.textContent = (nota.subtotal || nota.total).toFixed(2);
+    if (subVal) subVal.textContent = (nota.subtotal || nota.total || 0).toFixed(2);
     if (ivaVal) ivaVal.textContent = (nota.iva || 0).toFixed(2);
     if (iepsVal) iepsVal.textContent = (nota.ieps || 0).toFixed(2);
   } else {
@@ -3430,16 +3569,30 @@ window.viewNotaDetail = function(notaId) {
     if (iepsRow) iepsRow.classList.add('hidden');
   }
 
-  document.getElementById('det-total').textContent = nota.total.toFixed(2);
+  document.getElementById('det-total').textContent = (parseFloat(nota.total) || 0).toFixed(2);
 
   const badgeEstado = document.getElementById('det-estado-badge');
-  badgeEstado.className = `badge badge-${getNotaDisplayState(nota).toLowerCase()}`;
-  badgeEstado.textContent = getNotaDisplayState(nota);
+  badgeEstado.className = `badge badge-${displaySt.toLowerCase()}`;
+  badgeEstado.textContent = displaySt;
+
+  // Renderizar firmas digitales y botones de firma según rol
+  updateDetailedSignaturesSection(nota);
+
+  // Mostrar/Ocultar caja de aprobación/rechazo si está Pendiente
+  const pendingAuthBox = document.getElementById('det-pending-auth-box');
+  if (pendingAuthBox) {
+    const canApprove = currentUser && (currentUser.rol === 'Administrador' || (currentUser.rol === 'Gerente' && (!nota.sucursalId || nota.sucursalId === currentUser.sucursalId)));
+    if (displaySt === 'Pendiente' && canApprove) {
+      pendingAuthBox.classList.remove('hidden');
+    } else {
+      pendingAuthBox.classList.add('hidden');
+    }
+  }
 
   const btnCancel = document.getElementById('btn-cancel-nota-action');
-  if (currentUser.rol === 'Administrador' || currentUser.rol === 'Gerente') {
+  if (currentUser && (currentUser.rol === 'Administrador' || currentUser.rol === 'Gerente')) {
     btnCancel.classList.remove('hidden');
-    if (getNotaDisplayState(nota) === 'Cancelada') {
+    if (displaySt === 'Cancelada') {
       btnCancel.disabled = true;
       btnCancel.style.opacity = '0.5';
     } else {
@@ -3452,30 +3605,33 @@ window.viewNotaDetail = function(notaId) {
 };
 
 function getRequiredSignatures(nota) {
-  if (nota.tipo === 'Fisico') {
+  if (isNoteTipoMatch(nota, 'Fisico')) {
     return [
       { key: 'elaboro', label: 'Elaboró', rol: 'Vendedor' },
       { key: 'almacen', label: 'Almacén', rol: 'Almacen' },
-      { key: 'contabilidad', label: 'Contabilidad', rol: 'Contabilidad' },
-      { key: 'autorizo', label: 'Gerente', rol: 'Gerente' }
+      { key: 'autorizo', label: 'Gerente / Admin', rol: 'Gerente' }
     ];
   } else {
-    // Las financieras requieren firma obligatoria del Gerente para validez
     return [
       { key: 'elaboro', label: 'Elaboró', rol: 'Vendedor' },
       { key: 'contabilidad', label: 'Contabilidad', rol: 'Contabilidad' },
-      { key: 'autorizo', label: 'Gerente', rol: 'Gerente' }
+      { key: 'autorizo', label: 'Gerente / Admin', rol: 'Gerente' }
     ];
   }
 }
 
 function updateDetailedSignaturesSection(nota) {
   const required = getRequiredSignatures(nota);
+  const isFisico = isNoteTipoMatch(nota, 'Fisico');
   const containerAlmacen = document.getElementById('sig-box-almacen');
-  if (nota.tipo === 'Fisico') {
-    containerAlmacen.classList.remove('hidden');
-  } else {
-    containerAlmacen.classList.add('hidden');
+  const containerContabilidad = document.getElementById('sig-box-contabilidad');
+  if (containerAlmacen) {
+    if (isFisico) containerAlmacen.classList.remove('hidden');
+    else containerAlmacen.classList.add('hidden');
+  }
+  if (containerContabilidad) {
+    if (!isFisico) containerContabilidad.classList.remove('hidden');
+    else containerContabilidad.classList.add('hidden');
   }
 
   const statusElements = {
@@ -3493,27 +3649,41 @@ function updateDetailedSignaturesSection(nota) {
   };
 
   Object.keys(statusElements).forEach(k => {
-    statusElements[k].textContent = 'N/A';
-    statusElements[k].className = 'signature-status';
-    buttonElements[k].style.display = 'none';
+    if (statusElements[k]) {
+      statusElements[k].textContent = 'N/A';
+      statusElements[k].className = 'signature-status';
+    }
+    if (buttonElements[k]) {
+      buttonElements[k].style.display = 'none';
+    }
   });
 
+  const isCancelada = getNotaDisplayState(nota) === 'Cancelada';
+  const firmasObj = nota.firmas || {};
+
   required.forEach(req => {
-    const sigUserVal = nota.firmas[req.key];
-    const statusEl = statusElements[req.key === 'autorizo' ? 'gerente' : req.key === 'elaboro' ? 'elaboro' : req.key];
-    const btnEl = buttonElements[req.key === 'autorizo' ? 'gerente' : req.key === 'elaboro' ? 'elaboro' : req.key];
+    const sigUserVal = firmasObj[req.key];
+    const domKey = req.key === 'autorizo' ? 'gerente' : req.key;
+    const statusEl = statusElements[domKey];
+    const btnEl = buttonElements[domKey];
+    if (!statusEl || !btnEl) return;
     
     if (sigUserVal) {
-      const u = usuarios.find(usr => usr.id === sigUserVal);
-      statusEl.textContent = `✓ Firmado por: ${u ? u.nombre : 'Usuario'}`;
+      const u = usuarios.find(usr => usr.id === sigUserVal || usr.id_usuario === sigUserVal);
+      statusEl.textContent = `✓ Firmado por: ${u ? u.nombre : sigUserVal}`;
       statusEl.className = 'signature-status signed';
       btnEl.style.display = 'none';
     } else {
       statusEl.textContent = 'Pendiente';
       statusEl.className = 'signature-status';
       
-      // Mostrar botón de firma si el rol coincide
-      if (nota.estado !== 'Cancelada' && (currentUser.rol === req.rol || (req.key === 'elaboro' && currentUser.rol === 'Administrador') || (req.rol === 'Gerente' && currentUser.rol === 'Administrador'))) {
+      const rol = currentUser ? currentUser.rol : '';
+      const canSign = !isCancelada && (
+        rol === 'Administrador' ||
+        rol === req.rol ||
+        (req.key === 'elaboro' && rol === 'Gerente')
+      );
+      if (canSign) {
         btnEl.style.display = 'inline-block';
         btnEl.onclick = () => signNota(nota.id, req.key);
       }
@@ -3521,41 +3691,82 @@ function updateDetailedSignaturesSection(nota) {
   });
 }
 
-function signNota(notaId, key) {
-  const notaIdx = notas.findIndex(n => n.id === notaId);
-  if (notaIdx === -1) return;
-  
-  notas[notaIdx].firmas[key] = currentUser.id;
-
-  const required = getRequiredSignatures(notas[notaIdx]);
-  const todasFirmadas = required.every(req => notas[notaIdx].firmas[req.key] !== null && notas[notaIdx].firmas[req.key] !== undefined);
-  
-  if (todasFirmadas) {
-    notas[notaIdx].estado_autorizacion = 'Firmada';
+window.signNota = async function(notaId, key) {
+  const res = await ejecutarAccionNota(notaId, { accion: 'firmar', key });
+  if (res.ok) {
+    alert("Nota firmada digitalmente y sincronizada en SQL Server.");
+    await fetchAPIData();
+    viewNotaDetail(notaId, true);
+  } else {
+    alert(res.message || "No se pudo firmar la nota.");
   }
+};
 
-  saveData('ca_notas', notas);
-  pushToCloudStorage();
-  alert("Nota firmada digitalmente.");
-  
-  // Limpiar posible warning
-  const wEl = document.getElementById('det-warning-validity');
-  if (wEl) wEl.remove();
+window.cancelarNota = async function(notaId) {
+  const targetId = notaId || currentDetailNotaId;
+  if (!targetId) return;
+  if (!currentUser || (currentUser.rol !== 'Administrador' && currentUser.rol !== 'Gerente')) {
+    alert("Solo el Gerente y el Administrador General pueden cancelar notas de crédito.");
+    return;
+  }
+  const nota = notas.find(n => n.id === targetId || String(n.folio) === String(targetId));
+  if (nota && getNotaDisplayState(nota) === 'Cancelada') {
+    alert("Esta nota ya se encuentra cancelada.");
+    return;
+  }
+  if (!confirm(`¿Estás seguro de que deseas cancelar la nota #${nota ? nota.folio + '-' + nota.serie : targetId}? Esta acción es definitiva y liberará el presupuesto en todos los dispositivos.`)) {
+    return;
+  }
+  const motivo = prompt("Motivo de cancelación (opcional):", "Cancelada por " + currentUser.nombre) || "Cancelada por usuario";
 
-  viewNotaDetail(notaId);
-  initDashboard();
-}
+  const res = await ejecutarAccionNota(targetId, { accion: 'cancelar', motivo });
+  if (res.ok) {
+    alert("Nota de crédito cancelada con éxito en SQL Server.");
+    await fetchAPIData();
+    if (currentView === 'notas-detail' && currentDetailNotaId === targetId) {
+      viewNotaDetail(targetId, true);
+    }
+  } else {
+    alert(res.message || "Error al cancelar la nota en el servidor.");
+  }
+};
+
+window.aprobarNota = async function(notaId) {
+  const targetId = notaId || currentDetailNotaId;
+  if (!targetId) return;
+  const res = await ejecutarAccionNota(targetId, { accion: 'aprobar' });
+  if (res.ok) {
+    alert("Nota autorizada con éxito.");
+    await fetchAPIData();
+    viewNotaDetail(targetId, true);
+  } else {
+    alert(res.message || "No se pudo autorizar la nota.");
+  }
+};
+
+window.rechazarNota = async function(notaId) {
+  const targetId = notaId || currentDetailNotaId;
+  if (!targetId) return;
+  const motivo = prompt("Indica el motivo del rechazo:", "Rechazada por gerencia");
+  if (motivo === null) return;
+  const res = await ejecutarAccionNota(targetId, { accion: 'rechazar', motivo });
+  if (res.ok) {
+    alert("Nota rechazada.");
+    await fetchAPIData();
+    viewNotaDetail(targetId, true);
+  } else {
+    alert(res.message || "No se pudo rechazar la nota.");
+  }
+};
 
 document.getElementById('btn-detail-back').addEventListener('click', () => {
   const nota = notas.find(n => n.id === currentDetailNotaId);
-  if (currentUser.rol === 'Vendedor') {
-    switchView('dashboard');
+  if (nota && isNoteTipoMatch(nota, 'Fisico')) {
+    switchView('notas-fisicas');
+  } else if (nota && isNoteTipoMatch(nota, 'Financiero')) {
+    switchView('notas-financieras');
   } else {
-    if (nota && nota.tipo === 'Fisico') {
-      switchView('notas-fisicas');
-    } else {
-      switchView('notas-financieras');
-    }
+    switchView('dashboard');
   }
 });
 
@@ -3564,37 +3775,15 @@ document.getElementById('btn-detail-print').addEventListener('click', () => {
 });
 
 document.getElementById('btn-cancel-nota-action').addEventListener('click', () => {
-  if (currentUser.rol !== 'Administrador' && currentUser.rol !== 'Gerente') {
-    alert("Solo el Gerente y el Administrador General pueden cancelar notas de crédito.");
-    return;
-  }
-  if (confirm("¿Estás seguro de que deseas cancelar esta nota de crédito? Esta acción liberará el presupuesto.")) {
-    const idx = notas.findIndex(n => n.id === currentDetailNotaId);
-    if (idx !== -1) {
-      const nota = notas[idx];
-      const { auth, oper } = getNotaStates(nota);
-      
-      if (nota.tipo === 'Financiero' && oper === 'Activa' && (auth === 'Autorizada' || auth === 'Emitida' || auth === 'Firmada')) {
-        const mes = nota.fechaEmision.substring(0, 7);
-        const pptoIdx = presupuestos.findIndex(p => p.vendedorId === nota.vendedorId && p.mes === mes);
-        if (pptoIdx !== -1) {
-          const currentCons = parseFloat(presupuestos[pptoIdx].consumido) || 0;
-          const discountVal = parseFloat(nota.importeDescuento || nota.total) || 0;
-          presupuestos[pptoIdx].consumido = Math.max(0, currentCons - discountVal);
-          saveData('ca_presupuestos', presupuestos);
-        }
-      }
+  window.cancelarNota(currentDetailNotaId);
+});
 
-      notas[idx].estado_operacion = 'Cancelada';
-      notas[idx].estado = 'Cancelada';
-      saveData('ca_notas', notas);
-      pushToCloudStorage();
-      pushToSQLServer('notas', notas[idx]);
-      alert("Nota cancelada con éxito.");
-      viewNotaDetail(currentDetailNotaId);
-      initDashboard();
-    }
-  }
+document.getElementById('btn-approve-nota-action')?.addEventListener('click', () => {
+  window.aprobarNota(currentDetailNotaId);
+});
+
+document.getElementById('btn-reject-nota-action')?.addEventListener('click', () => {
+  window.rechazarNota(currentDetailNotaId);
 });
 
 function refreshAllModuleDropdowns() {
@@ -3629,6 +3818,7 @@ function refreshAllModuleDropdowns() {
   
   const provSelect = document.getElementById('nfi-proveedor');
   if (provSelect) {
+    const prevProv = provSelect.value;
     provSelect.innerHTML = '<option value="">-- Selecciona Proveedor --</option>';
     activeProvs.forEach(p => {
       const opt = document.createElement('option');
@@ -3636,6 +3826,9 @@ function refreshAllModuleDropdowns() {
       opt.textContent = p.nombre;
       provSelect.appendChild(opt);
     });
+    if (prevProv && Array.from(provSelect.options).some(o => o.value === prevProv)) {
+      provSelect.value = prevProv;
+    }
   }
 
   // 5. Presupuestos Form
@@ -3664,36 +3857,58 @@ function refreshAllModuleDropdowns() {
 
 // --- 5. VIEW: GESTIÓN DE PRESUPUESTOS ---
 function setupPresupuestosView() {
+  const curMes = localMonthStr();
+  const filterMonthEl = document.getElementById('budget-filter-month');
+  const budgetMonthEl = document.getElementById('budget-month');
+  if (filterMonthEl && (!filterMonthEl.value || filterMonthEl.value === '2026-03')) {
+    filterMonthEl.value = curMes;
+  }
+  if (budgetMonthEl && (!budgetMonthEl.value || budgetMonthEl.value === '2026-03')) {
+    budgetMonthEl.value = curMes;
+  }
+
   document.getElementById('budget-filter-month').addEventListener('change', () => {
     renderPresupuestosGrid();
   });
 
-  document.getElementById('form-set-budget').addEventListener('submit', (e) => {
+  document.getElementById('form-set-budget').addEventListener('submit', async (e) => {
     e.preventDefault();
     const vendId = document.getElementById('budget-vendedor').value;
-    const mes = document.getElementById('budget-month').value;
+    const mes = document.getElementById('budget-month').value || localMonthStr();
     const limite = parseFloat(document.getElementById('budget-limit').value) || 0;
     const fechaLimite = document.getElementById('budget-deadline').value;
     const bloquearExceso = document.getElementById('budget-block-excess').checked;
 
     const idx = presupuestos.findIndex(p => matchSellerIdOrName(p.vendedorId, vendId) && p.mes === mes);
+    const consumidoActual = getBudgetConsumedForSeller(vendId, mes);
+    let pptoObj;
     if (idx !== -1) {
       presupuestos[idx].limite = limite;
+      presupuestos[idx].consumido = consumidoActual;
       presupuestos[idx].fechaLimite = fechaLimite;
       presupuestos[idx].bloquearExceso = bloquearExceso;
+      pptoObj = presupuestos[idx];
     } else {
-      presupuestos.push({ vendedorId: vendId, mes, limite, consumido: 0, fechaLimite, bloquearExceso });
+      pptoObj = { id: 'PP_' + vendId + '_' + mes, vendedorId: vendId, mes, limite, consumido: consumidoActual, fechaLimite, bloquearExceso };
+      presupuestos.push(pptoObj);
     }
 
     saveData('ca_presupuestos', presupuestos);
-    alert("Presupuesto guardado correctamente.");
+    try {
+      await pushToSQLServer('presupuestos', pptoObj);
+      await fetchAPIData();
+    } catch (err) {
+      console.warn('[setupPresupuestosView] Error guardando presupuesto en SQL:', err);
+    }
+    alert("Presupuesto guardado y sincronizado en SQL Server.");
     renderPresupuestosGrid();
     initDashboard();
   });
 }
 
 function renderPresupuestosGrid() {
-  const selectFilter = document.getElementById('budget-filter-month').value;
+  const filterEl = document.getElementById('budget-filter-month');
+  const selectFilter = (filterEl && filterEl.value) ? filterEl.value : localMonthStr();
   const container = document.getElementById('container-budgets-grid');
   container.innerHTML = '';
 
@@ -3701,20 +3916,21 @@ function renderPresupuestosGrid() {
   let activeVendedores = vendedores.filter(v => !v.eliminado);
 
   if (currentUser && currentUser.rol === 'Vendedor') {
-    // Un Vendedor SOLO puede visualizar su propio presupuesto individual
-    const currentVend = activeVendedores.find(v => v.userId === currentUser.id || v.id === currentUser.id || v.nombre === currentUser.nombre || v.email === currentUser.email);
+    const currentVend = activeVendedores.find(v => v.userId === currentUser.id || matchSellerIdOrName(v.id, currentUser.id) || matchSellerIdOrName(v.nombre, currentUser.nombre));
     if (currentVend) {
       activeVendedores = [currentVend];
     } else {
       activeVendedores = [];
     }
   } else if (currentUser && currentUser.rol === 'Gerente') {
-    // Un Gerente SOLO visualiza los presupuestos de los vendedores de su sucursal
     activeVendedores = activeVendedores.filter(v => v.sucursalId === currentUser.sucursalId);
   }
 
   refreshAllModuleDropdowns();
-  document.getElementById('budget-month').value = selectFilter;
+  const budgetMonthEl = document.getElementById('budget-month');
+  if (budgetMonthEl && document.activeElement !== budgetMonthEl) {
+    budgetMonthEl.value = selectFilter;
+  }
 
   const pptoFiltrados = activeVendedores.map(v => {
     let p = presupuestos.find(pr => matchSellerIdOrName(pr.vendedorId, v.id) && pr.mes === selectFilter);
@@ -3723,14 +3939,13 @@ function renderPresupuestosGrid() {
       if (sellerPptos.length > 0) p = sellerPptos[sellerPptos.length - 1];
     }
     const targetMes = p ? p.mes : selectFilter;
-    const consumidoReal = getBudgetConsumedForSeller(v.id, targetMes);
-    const consumidoTotal = Math.max(p ? (parseFloat(p.consumido) || 0) : 0, consumidoReal);
+    const consumidoTotal = getBudgetConsumedForSeller(v.id, targetMes);
     return {
       vendedor: v,
       limite: p ? (parseFloat(p.limite) || 0) : 0,
       consumido: consumidoTotal,
-      fechaLimite: p ? p.fechaLimite : selectFilter + "-28",
-      bloquearExceso: p ? p.bloquearExceso : false
+      fechaLimite: p && p.fechaLimite ? p.fechaLimite : selectFilter + "-28",
+      bloquearExceso: p ? !!p.bloquearExceso : false
     };
   });
 
@@ -4439,9 +4654,12 @@ function renderCatalogosTables() {
     });
   }
 
-  // Checklist de clientes en formulario proveedor
+  // Checklist de clientes en formulario proveedor (preservando selección activa)
   const listDiv = document.getElementById('cat-prov-clientes-list');
   if (listDiv) {
+    const previouslyChecked = new Set(
+      Array.from(listDiv.querySelectorAll('.cat-prov-cli-cb:checked')).map(cb => cb.value)
+    );
     listDiv.innerHTML = '';
     clientes.filter(c => !c.eliminado).forEach(c => {
       const div = document.createElement('div');
@@ -4449,7 +4667,8 @@ function renderCatalogosTables() {
       div.style.alignItems = 'center';
       div.style.gap = '6px';
       div.style.marginBottom = '4px';
-      div.innerHTML = `<input type="checkbox" value="${c.id}" class="cat-prov-cli-cb" id="cat-prov-cli-${c.id}"> <label for="cat-prov-cli-${c.id}" style="text-transform:none; font-weight:normal; cursor:pointer;">${c.nombre}</label>`;
+      const isChecked = previouslyChecked.has(String(c.id)) ? 'checked' : '';
+      div.innerHTML = `<input type="checkbox" value="${c.id}" class="cat-prov-cli-cb" id="cat-prov-cli-${c.id}" ${isChecked}> <label for="cat-prov-cli-${c.id}" style="text-transform:none; font-weight:normal; cursor:pointer;">${c.nombre}</label>`;
       listDiv.appendChild(div);
     });
   }
@@ -4837,8 +5056,7 @@ window.exportStatisticsToCSV = function() {
 
     const vendorFinancieras = financieras.filter(n => isNoteVendorMatch(n, v.id));
     const countFin = vendorFinancieras.length;
-    const consFinReal = vendorFinancieras.reduce((s, n) => s + (parseFloat(n.total || n.importeDescuento) || 0), 0);
-    const consFin = Math.max(ppto ? (parseFloat(ppto.consumido) || 0) : 0, consFinReal);
+    const consFin = vendorFinancieras.reduce((s, n) => s + (parseFloat(n.total || n.importeDescuento) || 0), 0);
     const disponible = Math.max(0, limite - consFin);
     const pct = limite > 0 ? (consFin / limite) * 100 : 0;
 
@@ -5488,10 +5706,14 @@ function printReportResults() {
   printReturnsStatisticsBriefForSignatures();
 }
 
+window.sendEmailReport = function() {
+  alert("El envío automático por correo está deshabilitado. Utiliza los botones 'Descargar Excel' o 'Imprimir PDF' para compartir el reporte.");
+};
+
 // --- 10. PRE-IMPRESIÓN DE LOTES DE NOTAS EN BLANCO (Correction 1) ---
 function setupLotesPrintView() {
   const form = document.getElementById('form-print-lotes');
-  form.addEventListener('submit', (e) => {
+  form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const cantidad = parseInt(document.getElementById('lote-cantidad').value);
 
@@ -5500,7 +5722,27 @@ function setupLotesPrintView() {
       return;
     }
 
-    const startFolio = getNextFolioNumber();
+    let startFolio = getNextFolioNumber();
+    try {
+      if (!SQL_TUNNEL_BASE) await resolveServerURL();
+      if (SQL_TUNNEL_BASE) {
+        const res = await fetch(`${SQL_TUNNEL_BASE}/api/folios/reservar`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cantidad })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.ok && data.desdeFolio) {
+            startFolio = parseInt(data.desdeFolio, 10);
+            window.ultimoFolioReservado = parseInt(data.hastaFolio, 10) || (startFolio + cantidad - 1);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[setupLotesPrintView] No se pudo reservar lote en SQL, usando consecutivo local:', err);
+    }
+
     printBlankLote(startFolio, cantidad);
   });
 }
@@ -6098,6 +6340,7 @@ function getFilledFormatHtml(nota, tipoCopia) {
 function fillSelect(selectId, items, labelFn, includeEmpty = false) {
   const select = document.getElementById(selectId);
   if (!select) return;
+  const prevVal = select.value;
   select.innerHTML = '';
 
   if (includeEmpty) {
@@ -6113,6 +6356,10 @@ function fillSelect(selectId, items, labelFn, includeEmpty = false) {
     opt.textContent = labelFn(item);
     select.appendChild(opt);
   });
+
+  if (prevVal !== undefined && prevVal !== null && Array.from(select.options).some(o => o.value === prevVal)) {
+    select.value = prevVal;
+  }
 }
 
 function formatCurrency(num) {
@@ -6249,8 +6496,7 @@ function printReturnsStatisticsBriefForSignatures() {
     // Conteo Notas Financieras y Consumo Presupuestal
     const vendorFinancieras = financieras.filter(n => isNoteVendorMatch(n, v.id));
     const countFin = vendorFinancieras.length;
-    const consFinReal = vendorFinancieras.reduce((s, n) => s + (parseFloat(n.total || n.importeDescuento) || 0), 0);
-    const consFin = Math.max(ppto ? (parseFloat(ppto.consumido) || 0) : 0, consFinReal);
+    const consFin = vendorFinancieras.reduce((s, n) => s + (parseFloat(n.total || n.importeDescuento) || 0), 0);
     const disponible = Math.max(0, limite - consFin);
     const pct = limite > 0 ? (consFin / limite) * 100 : 0;
 
@@ -6763,10 +7009,7 @@ function renderFaltantesPickingHorizontalChart(period = 'mes') {
 
   if (sorted.length === 0) {
     sorted = [
-      { label: 'ART-101 - Aceite Vegetal 1L', cantidad: 24 },
-      { label: 'ART-102 - Arroz Súper Extra 1kg', cantidad: 18 },
-      { label: 'ART-103 - Frijol Negro 1kg', cantidad: 12 },
-      { label: 'ART-104 - Harina de Trigo 1kg', cantidad: 8 }
+      { label: 'Sin faltantes registrados en el período', cantidad: 0 }
     ];
   }
 

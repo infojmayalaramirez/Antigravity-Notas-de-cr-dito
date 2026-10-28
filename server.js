@@ -187,6 +187,175 @@ setTimeout(launchTunnel, 2000);
 // =====================================================================
 // SETUP DE ESQUEMA SQL SERVER
 // =====================================================================
+// =====================================================================
+// UTILIDADES COMPARTIDAS (integridad entre módulos)
+// =====================================================================
+
+// Mutex simple: serializa operaciones críticas (folios, cambios de estado de notas)
+// para que dos usuarios simultáneos nunca se pisen entre sí.
+let _lockChain = Promise.resolve();
+function withLock(fn) {
+    const run = _lockChain.then(fn, fn);
+    _lockChain = run.catch(() => {});
+    return run;
+}
+
+const normTxt = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+
+const SUCURSALES_MAESTRAS = {
+    S01: { nombre: 'Tijuana Matriz',  direccion: 'Av. España #1168, Col. Moderna',          fin: 1 },
+    S02: { nombre: 'Mexicali Centro', direccion: 'Blvd. Benito Juárez #450, Col. Jardines', fin: 1 },
+    S03: { nombre: 'Ensenada Puerto', direccion: 'Av. Ruiz #120, Col. Centro',              fin: 0 }
+};
+
+function serieDeFolio(folioNum) {
+    const grupo = Math.floor((Math.max(1, folioNum) - 1) / 1000);
+    return String.fromCharCode(65 + Math.max(0, grupo));
+}
+
+// Crea/enlaza un registro de Vendedores por cada Usuario con rol 'Vendedor'.
+// Así "Usuario vendedor" y "Vendedor del catálogo" son la MISMA persona en notas y presupuestos.
+async function sincronizarVendedores(pool) {
+    const users = (await pool.request().query(
+        `SELECT id_usuario, nombre, id_sucursal FROM dbo.Usuarios WHERE rol='Vendedor'`)).recordset;
+    const vends = (await pool.request().query(
+        `SELECT id_vendedor, nombre, id_sucursal, id_usuario, ISNULL(eliminado,0) AS eliminado FROM dbo.Vendedores`)).recordset;
+    const reclamados = new Set();
+
+    for (const u of users) {
+        const uid = String(u.id_usuario).trim();
+        let v = vends.find(x => String(x.id_usuario || '').trim() === uid && !x.eliminado && !reclamados.has(x.id_vendedor))
+             || vends.find(x => String(x.id_usuario || '').trim() === uid && !reclamados.has(x.id_vendedor));
+        if (!v) {
+            const cand = vends.filter(x => !String(x.id_usuario || '').trim() && normTxt(x.nombre) === normTxt(u.nombre) && !reclamados.has(x.id_vendedor));
+            v = cand.find(x => !x.eliminado) || cand[0];
+        }
+        if (v) {
+            reclamados.add(v.id_vendedor);
+            await pool.request()
+                .input('id', sql.VarChar, v.id_vendedor).input('nom', sql.VarChar, u.nombre)
+                .input('suc', sql.VarChar, u.id_sucursal).input('usr', sql.VarChar, uid)
+                .query(`UPDATE dbo.Vendedores SET nombre=@nom, id_sucursal=@suc, id_usuario=@usr, eliminado=0 WHERE id_vendedor=@id`);
+        } else {
+            const newId = ('V' + uid).slice(0, 50);
+            reclamados.add(newId);
+            await pool.request()
+                .input('id', sql.VarChar, newId).input('nom', sql.VarChar, u.nombre)
+                .input('suc', sql.VarChar, u.id_sucursal).input('usr', sql.VarChar, uid)
+                .query(`IF EXISTS (SELECT 1 FROM dbo.Vendedores WHERE id_vendedor=@id)
+                            UPDATE dbo.Vendedores SET nombre=@nom, id_sucursal=@suc, id_usuario=@usr, eliminado=0 WHERE id_vendedor=@id
+                        ELSE
+                            INSERT INTO dbo.Vendedores (id_vendedor,nombre,id_sucursal,id_usuario,eliminado) VALUES (@id,@nom,@suc,@usr,0)`);
+        }
+    }
+
+    // Vendedores ligados a un usuario que ya no existe o dejó de ser Vendedor => dar de baja
+    await pool.request().query(`
+        UPDATE dbo.Vendedores SET eliminado=1
+        WHERE ISNULL(id_usuario,'') <> '' AND ISNULL(eliminado,0)=0
+          AND id_usuario NOT IN (SELECT id_usuario FROM dbo.Usuarios WHERE rol='Vendedor')`);
+}
+
+async function repararIntegridad(pool) {
+    try {
+        await sincronizarVendedores(pool);
+
+        // Sucursales referenciadas por usuarios/notas/vendedores que ya no existen en el catálogo
+        const huerf = await pool.request().query(`
+            SELECT DISTINCT s FROM (
+                SELECT id_sucursal AS s FROM dbo.Usuarios
+                UNION SELECT id_sucursal FROM dbo.Notas
+                UNION SELECT id_sucursal FROM dbo.Vendedores WHERE ISNULL(eliminado,0)=0
+            ) x
+            WHERE s IS NOT NULL AND LTRIM(RTRIM(s)) <> ''
+              AND s NOT IN (SELECT id_sucursal FROM dbo.Sucursales)`);
+        for (const row of huerf.recordset) {
+            const m = SUCURSALES_MAESTRAS[row.s];
+            await pool.request()
+                .input('id', sql.VarChar, row.s)
+                .input('nom', sql.VarChar, m ? m.nombre : row.s)
+                .input('dir', sql.VarChar, m ? m.direccion : 'Recuperada automáticamente (tenía registros asociados)')
+                .input('fin', sql.Bit, m ? m.fin : 0)
+                .query(`INSERT INTO dbo.Sucursales (id_sucursal,nombre,direccion,activa_financiera) VALUES (@id,@nom,@dir,@fin)`);
+            console.log(`[Integridad] Sucursal '${row.s}' recuperada porque aún tenía registros asociados.`);
+        }
+    } catch (e) {
+        console.error('[Integridad] Error:', e.message);
+    }
+}
+
+// Siguiente folio libre = máximo entre notas existentes y lo reservado por lotes impresos
+async function folioBase(pool) {
+    const r = await pool.request().query(`
+        SELECT ISNULL(MAX(id_nota),0) AS m FROM dbo.Notas;
+        SELECT ISNULL(MAX(ultimo_folio),0) AS u FROM dbo.FolioControl;`);
+    return Math.max(r.recordsets[0][0].m || 0, r.recordsets[1][0].u || 0);
+}
+
+const RANGO_AUTH = { Borrador: 0, Pendiente: 1, Rechazada: 2, Autorizada: 3, Emitida: 3, Firmada: 4 };
+
+function firmasPorDefecto() {
+    return { elaboro: null, almacen: null, contabilidad: null, autorizo: null };
+}
+
+// Firmas requeridas por tipo de nota — alineado con la matriz de permisos del sistema:
+//  Física:     Vendedor (elabora) + Almacén (recepción) + Gerente (autoriza)
+//  Financiera: Vendedor (elabora) + Contabilidad (auditoría) + Gerente (autoriza)
+function firmasRequeridas(tipo) {
+    return tipo === 'Fisico' ? ['elaboro', 'almacen', 'autorizo'] : ['elaboro', 'contabilidad', 'autorizo'];
+}
+
+// Convierte una fila de dbo.Notas en el objeto nota que consume TODO el frontend
+function rowToNota(n) {
+    let full = {};
+    if (n.datos_json) { try { full = JSON.parse(n.datos_json) || {}; } catch (e) { full = {}; } }
+    const tipoTxt = String(full.tipo || full.tipo_nota || n.tipo_nota || '').toLowerCase();
+    const esFin = tipoTxt.includes('finan');
+    const idNum = parseInt(n.id_nota, 10);
+    const total = Number.isFinite(parseFloat(full.total)) ? parseFloat(full.total) : parseFloat(n.monto_total || 0);
+    const estAut = n.estado_autorizacion || full.estado_autorizacion || 'Autorizada';
+    const estOp  = n.estado_operacion || full.estado_operacion || 'Activa';
+    const firmas = { ...firmasPorDefecto(), ...(full.firmas || {}) };
+    const fecha = full.fechaEmision || n.fecha_emision_txt || '';
+    return {
+        ...full,
+        id: full.id || ('N' + String(idNum).padStart(4, '0')),
+        id_nota: idNum,
+        folio: String(full.folio || String(idNum).padStart(4, '0')),
+        serie: full.serie || serieDeFolio(idNum),
+        tipo: esFin ? 'Financiero' : 'Fisico',
+        tipo_nota: esFin ? 'Financiera' : 'Física',
+        sucursalId: full.sucursalId || n.id_sucursal || 'S01',
+        vendedorId: full.vendedorId || n.id_usuario_creador || '',
+        clienteId: full.clienteId || n.id_cliente || '',
+        operadorId: full.operadorId || n.id_operador || '',
+        clienteNombre: full.clienteNombre || n.cliente_nombre || '',
+        operadorNombre: full.operadorNombre || n.operador_nombre || '',
+        fechaEmision: String(fecha || '').substring(0, 10),
+        fechaAplicacion: String(full.fechaAplicacion || fecha || '').substring(0, 10),
+        total,
+        montoTotal: total,
+        subtotal: Number.isFinite(parseFloat(full.subtotal)) ? parseFloat(full.subtotal) : total,
+        importeDescuento: Number.isFinite(parseFloat(full.importeDescuento)) ? parseFloat(full.importeDescuento) : (esFin ? total : 0),
+        impresa: !!n.impresa,
+        firmas,
+        productos: Array.isArray(full.productos) ? full.productos : [],
+        estado_autorizacion: estAut,
+        estado_operacion: estOp,
+        estado: estOp === 'Cancelada' ? 'Cancelada' : estAut
+    };
+}
+
+const SQL_SELECT_NOTAS = `
+    SELECT id_nota, folio_consecutivo, ISNULL(tipo_nota,'Fisico') AS tipo_nota,
+           ISNULL(monto_total,0) AS monto_total, ISNULL(id_usuario_creador,'') AS id_usuario_creador,
+           ISNULL(id_sucursal,'S01') AS id_sucursal, ISNULL(id_cliente,'') AS id_cliente,
+           ISNULL(id_operador,'') AS id_operador, ISNULL(cliente_nombre,'') AS cliente_nombre,
+           ISNULL(operador_nombre,'') AS operador_nombre, ISNULL(impresa,0) AS impresa,
+           CONVERT(VARCHAR(10), fecha_emision, 23) AS fecha_emision_txt,
+           estado_autorizacion, estado_operacion, ISNULL(datos_json,'') AS datos_json
+    FROM dbo.Notas`;
+
 async function ensureDatabaseSchema() {
     try {
         const pool = await getPool();
@@ -204,48 +373,35 @@ async function ensureDatabaseSchema() {
                 ALTER TABLE dbo.Usuarios ADD telefono VARCHAR(50) NULL;
             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Usuarios') AND name = 'direccion')
                 ALTER TABLE dbo.Usuarios ADD direccion VARCHAR(255) NULL;
-
-            DELETE FROM dbo.Usuarios WHERE email = 'sofia@casaayala.com' OR id_usuario = 'U05';
         `);
 
-        // 2. Sembrar usuarios base
+        // 2. Sembrar usuarios base SOLO si la tabla está vacía (primer arranque).
+        //    Antes se re-insertaban en cada reinicio, resucitando usuarios eliminados por el Administrador.
         await pool.request().query(`
-            IF NOT EXISTS (SELECT 1 FROM dbo.Usuarios WHERE id_usuario = 'U01')
+            IF NOT EXISTS (SELECT 1 FROM dbo.Usuarios)
+            BEGIN
                 INSERT INTO dbo.Usuarios (id_usuario, nombre, email, rol, id_sucursal, nip, bloqueado, admin_tipo)
                 VALUES ('U01', 'Administrador Universal', 'cansagdl@gmail.com', 'Administrador', 'S01', '4819', 0, 'Ambos');
-            IF NOT EXISTS (SELECT 1 FROM dbo.Usuarios WHERE id_usuario = 'U02')
                 INSERT INTO dbo.Usuarios (id_usuario, nombre, email, rol, id_sucursal, nip, bloqueado, admin_tipo)
                 VALUES ('U02', 'Consuelo Carrillo', 'consuelo.carrillo2022@gmail.com', 'Contabilidad', 'S01', '1145', 0, 'Ninguno');
-            IF NOT EXISTS (SELECT 1 FROM dbo.Usuarios WHERE id_usuario = 'U04')
                 INSERT INTO dbo.Usuarios (id_usuario, nombre, email, rol, id_sucursal, nip, bloqueado, admin_tipo)
                 VALUES ('U04', 'Laura Sanchez', 'laurasanchezvazquez07@gmail.com', 'Vendedor', 'S01', '2020', 0, 'Ninguno');
-            IF NOT EXISTS (SELECT 1 FROM dbo.Usuarios WHERE id_usuario = 'U48921')
                 INSERT INTO dbo.Usuarios (id_usuario, nombre, email, rol, id_sucursal, nip, bloqueado, admin_tipo)
                 VALUES ('U48921', 'Araceli Escobar', 'lafer7522@gmail.com', 'Vendedor', 'S01', '4823', 0, 'Ninguno');
+            END
         `);
 
-        // 3. Sembrar sucursales maestras
+        // 3. Sembrar sucursales maestras SOLO si la tabla está vacía (no pisar lo que edite el Administrador)
         await pool.request().query(`
-            IF NOT EXISTS (SELECT 1 FROM dbo.Sucursales WHERE id_sucursal = 'S01')
+            IF NOT EXISTS (SELECT 1 FROM dbo.Sucursales)
+            BEGIN
                 INSERT INTO dbo.Sucursales (id_sucursal, nombre, direccion, activa_financiera)
                 VALUES ('S01', 'Tijuana Matriz', 'Av. España #1168, Col. Moderna', 1);
-            ELSE
-                UPDATE dbo.Sucursales SET nombre='Tijuana Matriz', direccion='Av. España #1168, Col. Moderna', activa_financiera=1
-                WHERE id_sucursal='S01';
-
-            IF NOT EXISTS (SELECT 1 FROM dbo.Sucursales WHERE id_sucursal = 'S02')
                 INSERT INTO dbo.Sucursales (id_sucursal, nombre, direccion, activa_financiera)
                 VALUES ('S02', 'Mexicali Centro', 'Blvd. Benito Juárez #450, Col. Jardines', 1);
-            ELSE
-                UPDATE dbo.Sucursales SET nombre='Mexicali Centro', direccion='Blvd. Benito Juárez #450, Col. Jardines', activa_financiera=1
-                WHERE id_sucursal='S02';
-
-            IF NOT EXISTS (SELECT 1 FROM dbo.Sucursales WHERE id_sucursal = 'S03')
                 INSERT INTO dbo.Sucursales (id_sucursal, nombre, direccion, activa_financiera)
                 VALUES ('S03', 'Ensenada Puerto', 'Av. Ruiz #120, Col. Centro', 0);
-            ELSE
-                UPDATE dbo.Sucursales SET nombre='Ensenada Puerto', direccion='Av. Ruiz #120, Col. Centro', activa_financiera=0
-                WHERE id_sucursal='S03';
+            END
         `);
 
         // 4. Crear tablas de catálogos
@@ -351,6 +507,20 @@ async function ensureDatabaseSchema() {
                 ALTER TABLE dbo.Notas ADD estado_operacion VARCHAR(50) NULL;
         `);
 
+        // 8. Control global de folios (reserva de lotes impresos visible para TODOS los equipos)
+        await pool.request().query(`
+            IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name='FolioControl')
+                CREATE TABLE dbo.FolioControl (
+                    id INT PRIMARY KEY,
+                    ultimo_folio INT NOT NULL DEFAULT 0
+                );
+            IF NOT EXISTS (SELECT 1 FROM dbo.FolioControl WHERE id=1)
+                INSERT INTO dbo.FolioControl (id, ultimo_folio) VALUES (1, 0);
+        `);
+
+        // 9. Integridad entre módulos: sucursales huérfanas + vínculo Usuario <-> Vendedor
+        await repararIntegridad(pool);
+
         console.log('[SQL Server] ✅ Esquema verificado y listo.');
     } catch (err) {
         console.error('[SQL Server] ❌ Error ajustando esquema:', err.message);
@@ -394,38 +564,60 @@ app.get('/api/usuarios', async (req, res) => {
     }
 });
 
+const ROLES_VALIDOS = ['Administrador', 'Gerente', 'Almacen', 'Contabilidad', 'Vendedor'];
+
 app.post('/api/usuarios', async (req, res) => {
     try {
-        const { id, id_usuario, nombre, email, rol, sucursalId, id_sucursal, nip, adminTipo, telefono, direccion } = req.body;
-        const uId       = String(id || id_usuario || '').trim();
-        const uNombre   = String(nombre || 'Usuario').trim();
-        const uEmail    = String(email || uId).trim();
+        const { id, id_usuario, nombre, email, rol, sucursalId, id_sucursal, nip, adminTipo, telefono, direccion, bloqueado } = req.body;
+        const uId       = String(id || id_usuario || '').trim().slice(0,10);
+        const uNombre   = String(nombre || 'Usuario').trim().slice(0,100);
         const uRol      = String(rol || 'Vendedor').trim();
+        const uEmail    = String(email || uId).trim().slice(0,150);
         const uSucursal = String(sucursalId || id_sucursal || 'S01').trim().slice(0,10);
         const uNip      = String(nip || '1234').trim().slice(0,10);
         const uAdmin    = String(adminTipo || (uRol === 'Administrador' ? 'Ambos' : 'Ninguno')).trim().slice(0,50);
         const uTel      = String(telefono || '').trim().slice(0,50);
         const uDir      = String(direccion || '').trim().slice(0,255);
 
+        if (!ROLES_VALIDOS.includes(uRol)) return res.status(400).json({ error: `Rol inválido: ${uRol}` });
+
         const pool = await getPool();
 
-        // Auto-crear sucursal si no existe
-        if (uSucursal) {
-            const chk = await pool.request().input('sid', sql.VarChar, uSucursal)
-                .query('SELECT 1 FROM dbo.Sucursales WHERE id_sucursal=@sid');
-            if (!chk.recordset.length) {
-                await pool.request()
-                    .input('sid', sql.VarChar, uSucursal)
-                    .input('nom', sql.VarChar, uSucursal)
-                    .query(`INSERT INTO dbo.Sucursales (id_sucursal,nombre,direccion,activa_financiera)
-                            VALUES (@sid,@nom,'Asignada desde Web',1)`);
-            }
-        }
+        // La sucursal asignada DEBE existir (ya no se crean sucursales fantasma)
+        const chk = await pool.request().input('sid', sql.VarChar, uSucursal)
+            .query('SELECT 1 FROM dbo.Sucursales WHERE id_sucursal=@sid');
+        if (!chk.recordset.length) return res.status(400).json({ error: `La sucursal '${uSucursal}' no existe.` });
 
+        // Id nuevo sin colisión
         let finalId = uId;
         if (!finalId) {
-            const cnt = await pool.request().query('SELECT COUNT(*) AS total FROM dbo.Usuarios');
-            finalId = 'U' + String((cnt.recordset[0].total || 0) + 1).padStart(2,'0');
+            const ids = (await pool.request().query('SELECT id_usuario FROM dbo.Usuarios')).recordset.map(r => r.id_usuario);
+            let n = ids.length + 1;
+            while (ids.includes('U' + String(n).padStart(2, '0'))) n++;
+            finalId = 'U' + String(n).padStart(2, '0');
+        }
+
+        // Email único
+        const dup = await pool.request().input('em', sql.VarChar, uEmail).input('id', sql.VarChar, finalId)
+            .query('SELECT 1 FROM dbo.Usuarios WHERE LOWER(LTRIM(RTRIM(email)))=LOWER(@em) AND id_usuario<>@id');
+        if (dup.recordset.length) return res.status(409).json({ error: `Ya existe un usuario con el correo ${uEmail}.` });
+
+        // No dejar al sistema sin Administrador
+        const actual = await pool.request().input('id', sql.VarChar, finalId)
+            .query('SELECT rol, bloqueado FROM dbo.Usuarios WHERE id_usuario=@id');
+        const existe = actual.recordset.length > 0;
+        if (existe && actual.recordset[0].rol === 'Administrador' && uRol !== 'Administrador') {
+            const otros = await pool.request().input('id', sql.VarChar, finalId)
+                .query(`SELECT COUNT(*) AS c FROM dbo.Usuarios WHERE rol='Administrador' AND id_usuario<>@id AND ISNULL(bloqueado,0)=0`);
+            if (!otros.recordset[0].c) return res.status(409).json({ error: 'No se puede cambiar el rol del único Administrador.' });
+        }
+
+        const bloq = typeof bloqueado === 'boolean' ? (bloqueado ? 1 : 0)
+                   : (existe ? (actual.recordset[0].bloqueado ? 1 : 0) : 0);
+        if (bloq && uRol === 'Administrador') {
+            const otros = await pool.request().input('id', sql.VarChar, finalId)
+                .query(`SELECT COUNT(*) AS c FROM dbo.Usuarios WHERE rol='Administrador' AND id_usuario<>@id AND ISNULL(bloqueado,0)=0`);
+            if (!otros.recordset[0].c) return res.status(409).json({ error: 'No se puede bloquear al único Administrador.' });
         }
 
         await pool.request()
@@ -438,16 +630,21 @@ app.post('/api/usuarios', async (req, res) => {
             .input('admin',    sql.VarChar, uAdmin)
             .input('tel',      sql.VarChar, uTel)
             .input('dir',      sql.VarChar, uDir)
+            .input('bloq',     sql.Bit, bloq)
             .query(`
                 IF EXISTS (SELECT 1 FROM dbo.Usuarios WHERE id_usuario=@id)
                     UPDATE dbo.Usuarios
                     SET nombre=@nombre, email=@email, rol=@rol, id_sucursal=@sucursal,
-                        nip=@nip, admin_tipo=@admin, telefono=@tel, direccion=@dir
+                        nip=@nip, admin_tipo=@admin, telefono=@tel, direccion=@dir, bloqueado=@bloq,
+                        intentos_fallidos = CASE WHEN @bloq=0 THEN 0 ELSE intentos_fallidos END
                     WHERE id_usuario=@id
                 ELSE
                     INSERT INTO dbo.Usuarios (id_usuario,nombre,email,rol,id_sucursal,nip,bloqueado,admin_tipo,telefono,direccion)
-                    VALUES (@id,@nombre,@email,@rol,@sucursal,@nip,0,@admin,@tel,@dir)
+                    VALUES (@id,@nombre,@email,@rol,@sucursal,@nip,@bloq,@admin,@tel,@dir)
             `);
+
+        // Vendedor del catálogo <-> Usuario siempre alineados (nombre, sucursal, alta/baja)
+        await sincronizarVendedores(pool);
 
         console.log(`[POST /api/usuarios] Usuario '${finalId}' (${uNombre}) guardado.`);
         res.json({ success: true, id: finalId });
@@ -460,9 +657,16 @@ app.post('/api/usuarios', async (req, res) => {
 app.delete('/api/usuarios/:id', async (req, res) => {
     try {
         const pool = await getPool();
-        await pool.request()
-            .input('id', sql.VarChar, req.params.id)
-            .query('DELETE FROM dbo.Usuarios WHERE id_usuario=@id');
+        const id = String(req.params.id || '').trim();
+        const u = await pool.request().input('id', sql.VarChar, id)
+            .query('SELECT rol FROM dbo.Usuarios WHERE id_usuario=@id');
+        if (u.recordset.length && u.recordset[0].rol === 'Administrador') {
+            const otros = await pool.request().input('id', sql.VarChar, id)
+                .query(`SELECT COUNT(*) AS c FROM dbo.Usuarios WHERE rol='Administrador' AND id_usuario<>@id AND ISNULL(bloqueado,0)=0`);
+            if (!otros.recordset[0].c) return res.status(409).json({ error: 'No se puede eliminar al único Administrador.' });
+        }
+        await pool.request().input('id', sql.VarChar, id).query('DELETE FROM dbo.Usuarios WHERE id_usuario=@id');
+        await sincronizarVendedores(pool); // el Vendedor ligado se da de baja automáticamente
         res.json({ success: true });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -491,12 +695,19 @@ app.get('/api/sucursales', async (req, res) => {
 app.post('/api/sucursales', async (req, res) => {
     try {
         const { id, nombre, direccion, activaFinanciera } = req.body;
-        const sId  = String(id || ('S' + Date.now())).trim().slice(0,10);
+        const pool = await getPool();
+
+        let sId = String(id || '').trim().slice(0,10);
+        if (!sId) {
+            const ids = (await pool.request().query('SELECT id_sucursal FROM dbo.Sucursales')).recordset.map(r => r.id_sucursal);
+            let n = ids.length + 1;
+            while (ids.includes('S' + String(n).padStart(2, '0'))) n++;
+            sId = 'S' + String(n).padStart(2, '0');
+        }
         const sNom = String(nombre || sId).trim().slice(0,100);
         const sDir = String(direccion || '').trim().slice(0,255);
         const sAct = activaFinanciera ? 1 : 0;
 
-        const pool = await getPool();
         await pool.request()
             .input('id',  sql.VarChar, sId)
             .input('nom', sql.VarChar, sNom)
@@ -509,7 +720,7 @@ app.post('/api/sucursales', async (req, res) => {
                     INSERT INTO dbo.Sucursales (id_sucursal,nombre,direccion,activa_financiera) VALUES (@id,@nom,@dir,@act)
             `);
 
-        res.json({ success: true });
+        res.json({ success: true, id: sId });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -518,9 +729,18 @@ app.post('/api/sucursales', async (req, res) => {
 app.delete('/api/sucursales/:id', async (req, res) => {
     try {
         const pool = await getPool();
-        await pool.request()
-            .input('id', sql.VarChar, req.params.id)
-            .query('DELETE FROM dbo.Sucursales WHERE id_sucursal=@id');
+        const id = String(req.params.id || '').trim();
+        const ref = await pool.request().input('id', sql.VarChar, id).query(`
+            SELECT (SELECT COUNT(*) FROM dbo.Usuarios  WHERE id_sucursal=@id) AS usuarios,
+                   (SELECT COUNT(*) FROM dbo.Vendedores WHERE id_sucursal=@id AND ISNULL(eliminado,0)=0) AS vendedores,
+                   (SELECT COUNT(*) FROM dbo.Notas WHERE id_sucursal=@id) AS notas`);
+        const r = ref.recordset[0];
+        if (r.usuarios || r.vendedores || r.notas) {
+            return res.status(409).json({
+                error: `No se puede eliminar: la sucursal tiene ${r.usuarios} usuario(s), ${r.vendedores} vendedor(es) y ${r.notas} nota(s) asociados. Reasigna o cancela primero.`
+            });
+        }
+        await pool.request().input('id', sql.VarChar, id).query('DELETE FROM dbo.Sucursales WHERE id_sucursal=@id');
         res.json({ success: true });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -848,11 +1068,11 @@ app.post('/api/presupuestos', async (req, res) => {
             .input('fl',  sql.VarChar, pFL)
             .input('be',  sql.Bit, pBE)
             .query(`
-                IF EXISTS (SELECT 1 FROM dbo.Presupuestos WHERE id_presupuesto=@id)
+                IF EXISTS (SELECT 1 FROM dbo.Presupuestos WHERE id_presupuesto=@id OR (vendedor_id=@vid AND mes=@mes))
                     UPDATE dbo.Presupuestos
                     SET vendedor_id=@vid, mes=@mes, limite=@lim, consumido=@con,
                         fecha_limite=@fl, bloquear_exceso=@be
-                    WHERE id_presupuesto=@id
+                    WHERE id_presupuesto=@id OR (vendedor_id=@vid AND mes=@mes)
                 ELSE
                     INSERT INTO dbo.Presupuestos (id_presupuesto,vendedor_id,mes,limite,consumido,fecha_limite,bloquear_exceso)
                     VALUES (@id,@vid,@mes,@lim,@con,@fl,@be)
@@ -866,225 +1086,10 @@ app.post('/api/presupuestos', async (req, res) => {
 // =====================================================================
 // 4. NOTAS DE CRÉDITO — SELECT global sin filtros de usuario
 // =====================================================================
-app.get('/api/notas', async (req, res) => {
-    try {
-        const pool = await getPool();
-        // SELECT global: TODOS los movimientos, sin filtro de usuario/sucursal
-        const result = await pool.request().query(
-            `SELECT id_nota, folio_consecutivo AS folio,
-                    ISNULL(tipo_nota,'Fisico') AS tipo,
-                    ISNULL(cliente_nombre,'') AS clienteNombre,
-                    ISNULL(operador_nombre,'') AS operadorNombre,
-                    ISNULL(monto_total,0) AS montoTotal,
-                    ISNULL(id_usuario_creador,'') AS vendedorId,
-                    ISNULL(id_sucursal,'S01') AS sucursalId,
-                    CONVERT(VARCHAR(10), fecha_emision, 23) AS fechaEmision,
-                    ISNULL(impresa,0) AS impresa,
-                    ISNULL(partidas,'[]') AS partidas,
-                    ISNULL(productos,'[]') AS productos,
-                    ISNULL(estado_autorizacion,'Autorizada') AS estado_autorizacion,
-                    ISNULL(estado_operacion,'Activa') AS estado_operacion
-             FROM dbo.Notas
-             ORDER BY fecha_emision DESC`
-        );
-        const notas = result.recordset.map(n => {
-            n.id = n.id_nota;
-            n.total = parseFloat(n.montoTotal || 0);
-            n.montoTotal = n.total;
-            if (typeof n.partidas === 'string') { try { n.partidas = JSON.parse(n.partidas); } catch(e){ n.partidas=[]; } }
-            if (typeof n.productos === 'string') { try { n.productos = JSON.parse(n.productos); } catch(e){ n.productos=[]; } }
-            return n;
-        });
-        res.json(notas);
-    } catch (error) {
-        console.error('[GET /api/notas]', error.message);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/notas', async (req, res) => {
-    try {
-        const nota = req.body;
-
-        // Fix: extraer folio numerico - strip prefijo "N" si existe (e.g. "N1001" -> 1001)
-        const folioRaw  = String(nota.folio || nota.id || '').replace(/\D/g, '');
-        let notaId      = parseInt(folioRaw || String(Date.now()).slice(-6), 10);
-        const esNueva   = nota.esNueva === true;
-        delete nota.esNueva;
-
-        // Evitar colisiones de folio entre usuarios: si es nota NUEVA y el folio ya existe,
-        // el servidor asigna el siguiente folio libre (MAX + 1) en lugar de sobrescribir.
-        if (esNueva) {
-            const poolChk = await getPool();
-            const exists = await poolChk.request().input('id', sql.Int, notaId)
-                .query('SELECT 1 AS e FROM dbo.Notas WHERE id_nota=@id');
-            if (exists.recordset.length) {
-                const mx = await poolChk.request().query('SELECT ISNULL(MAX(id_nota),0) AS m FROM dbo.Notas');
-                const oldId = notaId;
-                notaId = (mx.recordset[0].m || 0) + 1;
-                nota.folio = String(notaId).padStart(4, '0');
-                nota.id = 'N' + nota.folio;
-                console.log(`[POST /api/notas] Folio ${oldId} ocupado. Reasignado a ${notaId}.`);
-            }
-        }
-
-        const notaTipoRaw = String(nota.tipo || nota.tipo_nota || 'Fisico').trim();
-        const notaTipo    = notaTipoRaw.toLowerCase().includes('finan') ? 'Financiera' : 'Física';
-        const total     = parseFloat(nota.total || nota.montoTotal || nota.subtotal || 0);
-        // Fix: usar clienteId y operadorId del frontend (no clienteNombre/operadorNombre)
-        const clienteId  = String(nota.clienteId  || '').trim().slice(0, 50);
-        const operadorId = String(nota.operadorId  || '').trim().slice(0, 50);
-        const vendedorId = String(nota.vendedorId  || 'U01').trim().slice(0, 10);
-        const sucursal   = String(nota.sucursalId  || 'S01').trim().slice(0, 10);
-        const estadoAut  = String(nota.estado_autorizacion || 'Autorizada').trim().slice(0, 50);
-        const estadoOp   = String(nota.estado_operacion    || 'Activa').trim().slice(0, 50);
-        const fechaEmis  = nota.fechaEmision ? nota.fechaEmision.substring(0, 10) : null;
-
-        // Fix: guardar nota COMPLETA como JSON para no perder ningun campo
-        // (serie, facturas, firmas, causaMarcar, observaciones, claveInterna, etc.)
-        const notaSinFoto = { ...nota };
-        delete notaSinFoto.incidenciaFoto; // base64 demasiado grande para BD
-        const datosJson = JSON.stringify(notaSinFoto);
-
-        const pool = await getPool();
-
-        // Asegurar columnas nuevas si no existen
-        await pool.request().query(`
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='datos_json')
-                ALTER TABLE dbo.Notas ADD datos_json VARCHAR(MAX) NULL;
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='id_cliente')
-                ALTER TABLE dbo.Notas ADD id_cliente VARCHAR(50) NULL;
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='id_operador')
-                ALTER TABLE dbo.Notas ADD id_operador VARCHAR(50) NULL;
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='estado_autorizacion')
-                ALTER TABLE dbo.Notas ADD estado_autorizacion VARCHAR(50) NULL;
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Notas') AND name='estado_operacion')
-                ALTER TABLE dbo.Notas ADD estado_operacion VARCHAR(50) NULL;
-        `).catch(() => {});
-
-        await pool.request()
-            .input('id',       sql.Int,           notaId)
-            .input('folio',    sql.Int,           notaId)
-            .input('tipo',     sql.VarChar,       notaTipo)
-            .input('total',    sql.Decimal(18,2),  total)
-            .input('cliId',    sql.VarChar,       clienteId)
-            .input('opeId',    sql.VarChar,       operadorId)
-            .input('creador',  sql.VarChar,       vendedorId)
-            .input('suc',      sql.VarChar,       sucursal)
-            .input('estAut',   sql.VarChar,       estadoAut)
-            .input('estOp',    sql.VarChar,       estadoOp)
-            .input('fecha',    sql.VarChar,       fechaEmis)
-            .input('json',     sql.VarChar,       datosJson)
-            .query(`
-                IF EXISTS (SELECT 1 FROM dbo.Notas WHERE id_nota=@id)
-                    UPDATE dbo.Notas
-                    SET tipo_nota=@tipo, monto_total=@total,
-                        id_cliente=@cliId, id_operador=@opeId,
-                        cliente_nombre=@cliId, operador_nombre=@opeId,
-                        id_usuario_creador=@creador, id_sucursal=@suc,
-                        estado_autorizacion=@estAut, estado_operacion=@estOp,
-                        datos_json=@json
-                    WHERE id_nota=@id
-                ELSE
-                BEGIN
-                    SET IDENTITY_INSERT dbo.Notas ON;
-                    INSERT INTO dbo.Notas
-                    (id_nota, folio_consecutivo, tipo_nota, impresa, monto_total,
-                     id_cliente, id_operador, cliente_nombre, operador_nombre,
-                     id_usuario_creador, id_sucursal,
-                     fecha_emision, estado_autorizacion, estado_operacion, datos_json)
-                    VALUES (@id, @folio, @tipo, 0, @total,
-                            @cliId, @opeId, @cliId, @opeId, @creador, @suc,
-                            ISNULL(TRY_CAST(@fecha AS DATE), GETDATE()),
-                            @estAut, @estOp, @json);
-                    SET IDENTITY_INSERT dbo.Notas OFF;
-                END
-            `);
-
-        console.log('[POST /api/notas] Nota #' + notaId + ' (' + notaTipo + ') guardada. Total: $' + total);
-        res.json({ success: true, id: notaId, folio: String(notaId).padStart(4, '0') });
-    } catch (error) {
-        console.error('[POST /api/notas]', error.message);
-        res.status(500).json({ error: error.message });
-    }
-})
-app.delete('/api/notas/:id', async (req, res) => {
-    try {
-        const pool = await getPool();
-        await pool.request()
-            .input('id', sql.Int, parseInt(req.params.id, 10))
-            .query('DELETE FROM dbo.Notas WHERE id_nota=@id');
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// =====================================================================
-// 5. ENDPOINT UNIFICADO — todos los catálogos en una petición
-//    El frontend lo llama cada 5 segundos. Fuente: solo SQL Server.
-// =====================================================================
-app.get('/api/catalogos/all', async (req, res) => {
-    try {
-        const pool = await getPool();
-        const [cliR, opeR, venR, provR, presR, usuR, sucR, notasR] = await Promise.all([
-            pool.request().query(`SELECT id_cliente AS id, nombre, ISNULL(codigo_interno,'') AS codigoInterno, tiene_derecho_descuento AS tieneDerechoDescuento FROM dbo.Clientes WHERE ISNULL(eliminado,0)=0 ORDER BY nombre`),
-            pool.request().query(`SELECT id_operador AS id, nombre, ISNULL(puesto,'') AS puesto FROM dbo.Operadores WHERE ISNULL(eliminado,0)=0 ORDER BY nombre`),
-            pool.request().query(`SELECT id_vendedor AS id, nombre, ISNULL(id_sucursal,'S01') AS sucursalId, ISNULL(id_usuario,'') AS userId FROM dbo.Vendedores WHERE ISNULL(eliminado,0)=0 ORDER BY nombre`),
-            pool.request().query(`SELECT id_proveedor AS id, nombre, ISNULL(desc1,0) AS desc1, ISNULL(desc2,0) AS desc2, ISNULL(desc3,0) AS desc3, ISNULL(clientes_cajon_json,'[]') AS clientesCajonJson, ISNULL(fecha_inicio,'') AS fechaInicio, ISNULL(fecha_fin,'') AS fechaFin, ISNULL(tipo_promo,'clientes_exclusivos') AS tipoPromo FROM dbo.Proveedores WHERE ISNULL(eliminado,0)=0 ORDER BY nombre`),
-            pool.request().query(`SELECT id_presupuesto AS id, ISNULL(vendedor_id,'') AS vendedorId, ISNULL(mes,'') AS mes, ISNULL(limite,0) AS limite, ISNULL(consumido,0) AS consumido, ISNULL(fecha_limite,'') AS fechaLimite, ISNULL(bloquear_exceso,0) AS bloquearExceso FROM dbo.Presupuestos`),
-            pool.request().query(`SELECT id_usuario AS id, id_usuario, nombre, email, rol, id_sucursal AS sucursalId, id_sucursal, nip, bloqueado, admin_tipo AS adminTipo, ISNULL(telefono,'') AS telefono, ISNULL(direccion,'') AS direccion FROM dbo.Usuarios ORDER BY nombre`),
-            pool.request().query(`SELECT id_sucursal AS id, id_sucursal, nombre, ISNULL(direccion,'') AS direccion, activa_financiera AS activaFinanciera FROM dbo.Sucursales ORDER BY id_sucursal`),
-            pool.request().query(`SELECT id_nota AS id_nota, folio_consecutivo AS folio, ISNULL(tipo_nota,'Fisico') AS tipo, ISNULL(cliente_nombre,'') AS clienteNombre, ISNULL(operador_nombre,'') AS operadorNombre, ISNULL(monto_total,0) AS montoTotal, ISNULL(id_usuario_creador,'') AS vendedorId, ISNULL(id_sucursal,'S01') AS sucursalId, CONVERT(VARCHAR(10),fecha_emision,23) AS fechaEmision, ISNULL(estado_autorizacion,'Autorizada') AS estado_autorizacion, ISNULL(estado_operacion,'Activa') AS estado_operacion, ISNULL(partidas,'[]') AS partidas, ISNULL(datos_json,'') AS datos_json FROM dbo.Notas ORDER BY fecha_emision DESC`)
-        ]);
-
-        const proveedores = provR.recordset.map(p => ({
-            id: p.id, nombre: p.nombre,
-            desc1: parseFloat(p.desc1||0), desc2: parseFloat(p.desc2||0), desc3: parseFloat(p.desc3||0),
-            clientesCajon: (() => { try { return JSON.parse(p.clientesCajonJson||'[]'); } catch(e){ return []; } })(),
-            fechaInicio: p.fechaInicio, fechaFin: p.fechaFin, tipoPromo: p.tipoPromo
-        }));
-
-        const notas = notasR.recordset.map(n => {
-            // Si hay datos_json completo, usarlo como base (preserva todos los campos)
-            if (n.datos_json) {
-                try {
-                    const full = JSON.parse(n.datos_json);
-                    // Asegurar id y folio correctos
-                    full.id    = full.id    || ('N' + n.id_nota);
-                    full.folio = full.folio || n.id_nota;
-                    full.total = parseFloat(full.total || n.montoTotal || 0);
-                    full.montoTotal = full.total;
-                    // Asegurar estado de la BD (puede haber sido actualizado externamente)
-                    full.estado_autorizacion = n.estado_autorizacion || full.estado_autorizacion;
-                    full.estado_operacion    = n.estado_operacion    || full.estado_operacion;
-                    return full;
-                } catch(e) {}
-            }
-            // Fallback: construir objeto basico desde columnas SQL
-            n.id = 'N' + n.id_nota;
-            n.total = parseFloat(n.montoTotal || 0);
-            n.montoTotal = n.total;
-            if (typeof n.partidas === 'string') { try { n.partidas = JSON.parse(n.partidas); } catch(e) { n.partidas = []; } }
-            return n;
-        })
-
-        const usuarios = usuR.recordset.map(u => ({ ...u, id: u.id_usuario, id: u.id_usuario }));
-
-        res.json({
-            clientes:    cliR.recordset,
-            operadores:  opeR.recordset,
-            vendedores:  venR.recordset,
-            proveedores,
-            presupuestos: presR.recordset,
-            usuarios,
-            sucursales:  sucR.recordset,
-            notas
-        });
-    } catch (err) {
-        console.error('[GET /api/catalogos/all]', err.message);
-        res.status(500).json({ error: err.message });
-    }
+// Notas, folios globales y endpoint unificado /api/catalogos/all viven en routes_notas.js
+require('./routes_notas')(app, {
+    getPool, sql, withLock, rowToNota, SQL_SELECT_NOTAS, folioBase, serieDeFolio,
+    firmasRequeridas, firmasPorDefecto, RANGO_AUTH
 });
 
 // =====================================================================
