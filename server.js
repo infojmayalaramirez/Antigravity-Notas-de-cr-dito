@@ -92,7 +92,29 @@ function launchTunnel() {
         }
 
         console.log('[Cloudflare] 🌐 Levantando túnel seguro hacia http://127.0.0.1:3000...');
-        const child = spawn(cfExePath, ['tunnel', '--url', 'http://127.0.0.1:3000', '--protocol', 'http2'], {
+        const cfConfigPath = path.join(__dirname, 'cloudflare_config.json');
+        let cfConfig = null;
+        if (fs.existsSync(cfConfigPath)) {
+            try { cfConfig = JSON.parse(fs.readFileSync(cfConfigPath, 'utf8')); } catch (e) {}
+        }
+
+        const tunnelArgs = (cfConfig && cfConfig.token)
+            ? ['tunnel', '--protocol', 'http2', 'run', '--url', 'http://127.0.0.1:3000', '--token', cfConfig.token.trim()]
+            : ['tunnel', '--url', 'http://127.0.0.1:3000', '--protocol', 'http2'];
+
+        if (cfConfig && cfConfig.url && cfConfig.token) {
+            const fixedUrl = cfConfig.url.trim().replace(/\/+$/, '');
+            if (fixedUrl !== activeTunnelUrl) {
+                activeTunnelUrl = fixedUrl;
+                console.log(`\n========================================================`);
+                console.log(`[Cloudflare] 🔒 TÚNEL FIJO PERMANENTE ACTIVO: ${fixedUrl}`);
+                console.log(`========================================================\n`);
+                const tunnelJsonPath = path.join(__dirname, 'current_tunnel.json');
+                fs.writeFileSync(tunnelJsonPath, JSON.stringify({ url: fixedUrl, updated: new Date().toISOString(), permanent: true }), 'utf8');
+            }
+        }
+
+        const child = spawn(cfExePath, tunnelArgs, {
             windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe']
         });

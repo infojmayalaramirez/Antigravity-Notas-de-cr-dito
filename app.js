@@ -92,6 +92,7 @@ let productosMasterPicking = loadData('ca_productos_picking_master', []);
 // La URL del túnel se descarga dinámicamente de GitHub en cada arranque.
 // Así Netlify NUNCA necesita redesplegar cuando cambia el túnel.
 
+const PERMANENT_TUNNEL_URL = 'https://controlcasayala.com';
 const GITHUB_TUNNEL_FILE = 'https://raw.githubusercontent.com/infojmayalaramirez/Antigravity-Notas-de-cr-dito/main/current_tunnel.json';
 let SQL_TUNNEL_BASE = ''; // Se llena automáticamente al arrancar
 const CLOUD_SYNC_ENDPOINT = '/.netlify/functions/sync';
@@ -99,11 +100,12 @@ let isSyncingWithCloud = false;
 let cloudPushTimer = null;
 let isMergingFromCloud = false;
 
-// Detectar si corremos desde el mismo servidor (localhost o túnel)
+// Detectar si corremos desde el mismo servidor (localhost, dominio propio o túnel)
 // En ese caso, las peticiones van al mismo origen sin necesitar la URL del túnel
 const IS_SAME_ORIGIN = (
   window.location.hostname === 'localhost' ||
   window.location.hostname === '127.0.0.1' ||
+  window.location.hostname.includes('controlcasayala.com') ||
   window.location.hostname.includes('trycloudflare.com') ||
   window.location.hostname.includes('192.168.') ||
   window.location.hostname.includes('26.179.')
@@ -117,6 +119,12 @@ async function resolveServerURL() {
     console.log('[SQL] Modo directo:', SQL_TUNNEL_BASE);
     return;
   }
+
+  // Usar dominio permanente por defecto
+  SQL_TUNNEL_BASE = PERMANENT_TUNNEL_URL;
+  localStorage.setItem('ca_last_active_tunnel', SQL_TUNNEL_BASE);
+  console.log('[SQL] Conectado a dominio fijo:', SQL_TUNNEL_BASE);
+  return;
 
   const isValidTunnel = (u) => typeof u === 'string' && u.startsWith('https://') && !u.includes('api.trycloudflare.com');
 
