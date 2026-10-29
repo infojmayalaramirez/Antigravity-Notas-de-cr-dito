@@ -797,7 +797,7 @@ app.get('/api/clientes', async (req, res) => {
 
 app.post('/api/clientes', async (req, res) => {
     try {
-        const { id, nombre, codigoInterno, tieneDerechoDescuento, vendedorId } = req.body;
+        const { id, nombre, codigoInterno, tieneDerechoDescuento, vendedorId, soloVendedor } = req.body;
         const cId   = String(id || '').trim().slice(0,50);
         const cNom  = String(nombre || '').trim().slice(0,255);
         const cCod  = String(codigoInterno || cId).trim().slice(0,50);
@@ -808,22 +808,24 @@ app.post('/api/clientes', async (req, res) => {
 
         const pool = await getPool();
 
-        // Validar que el código interno no esté duplicado en otro cliente activo
-        const dupCheck = await pool.request()
-            .input('id',  sql.VarChar, cId)
-            .input('cod', sql.VarChar, cCod)
-            .query(`
-                SELECT TOP 1 id_cliente, nombre
-                FROM dbo.Clientes
-                WHERE ISNULL(eliminado, 0) = 0
-                  AND LOWER(LTRIM(RTRIM(ISNULL(codigo_interno, '')))) = LOWER(LTRIM(RTRIM(@cod)))
-                  AND id_cliente <> @id
-            `);
-        if (dupCheck.recordset.length > 0) {
-            const dup = dupCheck.recordset[0];
-            return res.status(409).json({
-                error: `El Código Interno "${cCod}" ya está registrado con el cliente "${dup.nombre}". No se permiten códigos internos duplicados.`
-            });
+        // Validar que el código interno no esté duplicado en otro cliente activo (al registrar o editar cliente)
+        if (!soloVendedor) {
+            const dupCheck = await pool.request()
+                .input('id',  sql.VarChar, cId)
+                .input('cod', sql.VarChar, cCod)
+                .query(`
+                    SELECT TOP 1 id_cliente, nombre
+                    FROM dbo.Clientes
+                    WHERE ISNULL(eliminado, 0) = 0
+                      AND LOWER(LTRIM(RTRIM(ISNULL(codigo_interno, '')))) = LOWER(LTRIM(RTRIM(@cod)))
+                      AND id_cliente <> @id
+                `);
+            if (dupCheck.recordset.length > 0) {
+                const dup = dupCheck.recordset[0];
+                return res.status(409).json({
+                    error: `El Código Interno "${cCod}" ya está registrado con el cliente "${dup.nombre}". No se permiten códigos internos duplicados.`
+                });
+            }
         }
 
         await pool.request()
