@@ -434,8 +434,11 @@ async function ensureDatabaseSchema() {
                     nombre VARCHAR(255) NOT NULL,
                     codigo_interno VARCHAR(50) NULL,
                     tiene_derecho_descuento BIT DEFAULT 0,
+                    id_vendedor VARCHAR(50) NULL,
                     eliminado BIT DEFAULT 0
                 );
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Clientes') AND name='id_vendedor')
+                ALTER TABLE dbo.Clientes ADD id_vendedor VARCHAR(50) NULL;
             IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name='Operadores')
                 CREATE TABLE dbo.Operadores (
                     id_operador VARCHAR(50) PRIMARY KEY,
@@ -781,7 +784,8 @@ app.get('/api/clientes', async (req, res) => {
         const result = await pool.request().query(
             `SELECT id_cliente AS id, nombre,
                     ISNULL(codigo_interno,'') AS codigoInterno,
-                    tiene_derecho_descuento AS tieneDerechoDescuento
+                    tiene_derecho_descuento AS tieneDerechoDescuento,
+                    ISNULL(NULLIF(id_vendedor,''),'PUBLICO') AS vendedorId
              FROM dbo.Clientes WHERE ISNULL(eliminado,0)=0
              ORDER BY nombre`
         );
@@ -793,11 +797,12 @@ app.get('/api/clientes', async (req, res) => {
 
 app.post('/api/clientes', async (req, res) => {
     try {
-        const { id, nombre, codigoInterno, tieneDerechoDescuento } = req.body;
+        const { id, nombre, codigoInterno, tieneDerechoDescuento, vendedorId } = req.body;
         const cId   = String(id || '').trim().slice(0,50);
         const cNom  = String(nombre || '').trim().slice(0,255);
         const cCod  = String(codigoInterno || cId).trim().slice(0,50);
         const cDesc = tieneDerechoDescuento ? 1 : 0;
+        const cVen  = String(vendedorId || 'PUBLICO').trim().slice(0,50);
 
         if (!cId || !cNom) return res.status(400).json({ error: 'id y nombre son requeridos' });
 
@@ -807,12 +812,17 @@ app.post('/api/clientes', async (req, res) => {
             .input('nom',  sql.VarChar, cNom)
             .input('cod',  sql.VarChar, cCod)
             .input('desc', sql.Bit, cDesc)
+            .input('ven',  sql.VarChar, cVen)
             .query(`
                 IF EXISTS (SELECT 1 FROM dbo.Clientes WHERE id_cliente=@id)
-                    UPDATE dbo.Clientes SET nombre=@nom, codigo_interno=@cod, tiene_derecho_descuento=@desc WHERE id_cliente=@id
+                    UPDATE dbo.Clientes
+                    SET nombre=@nom, codigo_interno=@cod, tiene_derecho_descuento=@desc,
+                        id_vendedor=CASE WHEN @ven='' THEN ISNULL(id_vendedor,'PUBLICO') ELSE @ven END,
+                        eliminado=0
+                    WHERE id_cliente=@id
                 ELSE
-                    INSERT INTO dbo.Clientes (id_cliente,nombre,codigo_interno,tiene_derecho_descuento,eliminado)
-                    VALUES (@id,@nom,@cod,@desc,0)
+                    INSERT INTO dbo.Clientes (id_cliente,nombre,codigo_interno,tiene_derecho_descuento,id_vendedor,eliminado)
+                    VALUES (@id,@nom,@cod,@desc,@ven,0)
             `);
         res.json({ success: true });
     } catch (error) {

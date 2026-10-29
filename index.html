@@ -1523,9 +1523,10 @@
           <!-- A. TAB CLIENTES -->
           <div id="panel-cat-clientes">
             <div class="form-grid">
-              <div class="card">
-                <div class="card-title" style="font-size:14px;">Registrar Cliente</div>
+              <div class="card" id="form-cat-cliente-card">
+                <div class="card-title" style="font-size:14px;" id="form-cat-cliente-title">Registrar Cliente</div>
                 <form id="form-cat-cliente">
+                  <input type="hidden" id="cat-cli-id">
                   <div class="form-group" style="margin-bottom:12px;">
                     <label>Razón Social</label>
                     <input type="text" id="cat-cli-nombre" class="form-control" required
@@ -1535,12 +1536,21 @@
                     <label>Código Interno</label>
                     <input type="text" id="cat-cli-rfc" class="form-control" required placeholder="Ejem: CTE-101">
                   </div>
+                  <div class="form-group" style="margin-bottom:12px;" id="group-cat-cli-vendedor">
+                    <label>Vendedor Asignado <span style="font-size:10px; color:#b45309; font-weight:700;">(Solo Admin)</span></label>
+                    <select id="cat-cli-vendedor" class="form-control">
+                      <option value="PUBLICO">Público / General</option>
+                    </select>
+                  </div>
                   <div class="form-group" style="margin-bottom:16px; flex-direction:row; align-items:center; gap:8px;">
                     <input type="checkbox" id="cat-cli-descto" style="width:16px; height:16px;">
                     <label for="cat-cli-descto" style="text-transform:none; cursor:pointer;">Derecho a Descuento
                       Financiero</label>
                   </div>
-                  <button type="submit" class="btn btn-primary btn-sm">Guardar Cliente</button>
+                  <div style="display:flex; gap:8px;">
+                    <button type="submit" class="btn btn-primary btn-sm" id="btn-save-cliente">Guardar Cliente</button>
+                    <button type="button" class="btn btn-secondary btn-sm hidden" id="btn-cancel-edit-cliente">Cancelar</button>
+                  </div>
                 </form>
               </div>
               <div style="grid-column: span 2;">
@@ -1550,6 +1560,7 @@
                       <tr>
                         <th>Nombre</th>
                         <th>Código Interno</th>
+                        <th>Vendedor Asignado</th>
                         <th>Descuento Financiero</th>
                         <th>Acción</th>
                       </tr>
@@ -2220,8 +2231,8 @@
   </div>
 
   <!-- Scripts -->
-  <script src="mockData.js?v=37"></script>
-  <script src="app.js?v=37"></script>
+  <script src="mockData.js?v=38"></script>
+  <script src="app.js?v=38"></script>
 
   <!-- Inicialización de Gráficas de Inteligencia de Negocio (Chart.js) -->
   <script>

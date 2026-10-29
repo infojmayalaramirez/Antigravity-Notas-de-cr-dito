@@ -123,14 +123,24 @@ module.exports = function registrarRutasNotas(app, ctx) {
                 const total = parseFloat(nota.total || nota.montoTotal || nota.importeDescuento || nota.subtotal || 0) || 0;
                 const clienteId  = String(nota.clienteId  || '').trim().slice(0, 50);
                 const operadorId = String(nota.operadorId || '').trim().slice(0, 50);
-                const vendedorId = String(nota.vendedorId || 'U01').trim().slice(0, 10);
+                let vendedorId   = String(nota.vendedorId || 'U01').trim().slice(0, 50);
 
-                // Nombres reales (no IDs) en columnas legibles de SQL
+                // Nombres reales (no IDs) en columnas legibles de SQL + heredar vendedor asignado al cliente
                 let cliNombre = clienteId, opeNombre = operadorId;
                 if (clienteId) {
                     const c = await pool.request().input('c', sql.VarChar, clienteId)
-                        .query('SELECT nombre FROM dbo.Clientes WHERE id_cliente=@c');
-                    if (c.recordset.length) cliNombre = c.recordset[0].nombre;
+                        .query('SELECT nombre, ISNULL(id_vendedor, \'\') AS id_vendedor FROM dbo.Clientes WHERE id_cliente=@c');
+                    if (c.recordset.length) {
+                        cliNombre = c.recordset[0].nombre;
+                        const cliVend = String(c.recordset[0].id_vendedor || '').trim();
+                        if (cliVend && cliVend !== 'PUBLICO') {
+                            vendedorId = cliVend;
+                            nota.vendedorId = cliVend;
+                        } else if (cliVend === 'PUBLICO' && (!nota.vendedorId || nota.vendedorId === 'U01')) {
+                            vendedorId = 'PUBLICO';
+                            nota.vendedorId = 'PUBLICO';
+                        }
+                    }
                 }
                 if (operadorId) {
                     const o = await pool.request().input('o', sql.VarChar, operadorId)
@@ -341,7 +351,7 @@ module.exports = function registrarRutasNotas(app, ctx) {
         try {
             const pool = await getPool();
             const [cliR, opeR, venR, provR, presR, usuR, sucR, notasR, falR, folR] = await Promise.all([
-                pool.request().query(`SELECT id_cliente AS id, nombre, ISNULL(codigo_interno,'') AS codigoInterno, tiene_derecho_descuento AS tieneDerechoDescuento FROM dbo.Clientes WHERE ISNULL(eliminado,0)=0 ORDER BY nombre`),
+                pool.request().query(`SELECT id_cliente AS id, nombre, ISNULL(codigo_interno,'') AS codigoInterno, tiene_derecho_descuento AS tieneDerechoDescuento, ISNULL(NULLIF(id_vendedor,''),'PUBLICO') AS vendedorId FROM dbo.Clientes WHERE ISNULL(eliminado,0)=0 ORDER BY nombre`),
                 pool.request().query(`SELECT id_operador AS id, nombre, ISNULL(puesto,'') AS puesto FROM dbo.Operadores WHERE ISNULL(eliminado,0)=0 ORDER BY nombre`),
                 pool.request().query(`SELECT id_vendedor AS id, nombre, ISNULL(id_sucursal,'S01') AS sucursalId, ISNULL(id_usuario,'') AS userId FROM dbo.Vendedores WHERE ISNULL(eliminado,0)=0 ORDER BY nombre`),
                 pool.request().query(`SELECT id_proveedor AS id, nombre, ISNULL(desc1,0) AS desc1, ISNULL(desc2,0) AS desc2, ISNULL(desc3,0) AS desc3, ISNULL(clientes_cajon_json,'[]') AS clientesCajonJson, ISNULL(fecha_inicio,'') AS fechaInicio, ISNULL(fecha_fin,'') AS fechaFin, ISNULL(tipo_promo,'clientes_exclusivos') AS tipoPromo FROM dbo.Proveedores WHERE ISNULL(eliminado,0)=0 ORDER BY nombre`),

@@ -1063,7 +1063,10 @@ function setupClientAutocomplete(prefix) { // prefix = 'nf' o 'nfi'
         hiddenInput.value = c.id;
         dropdown.classList.add('hidden');
         
-        // Disparar evento change en el input oculto
+        // Disparar evento change en el input oculto y sincronizar el vendedor asignado al cliente
+        if (typeof syncVendorFromSelectedClient === 'function') {
+          syncVendorFromSelectedClient(prefix, c);
+        }
         hiddenInput.dispatchEvent(new Event('change'));
         if (prefix === 'nfi') {
           const provSelect = document.getElementById('nfi-proveedor');
@@ -1113,6 +1116,9 @@ function setupClientAutocomplete(prefix) { // prefix = 'nf' o 'nfi'
       const codeStr = found.codigoInterno || found.codigo || found.id || '';
       searchInput.value = `[${codeStr}] ${found.nombre}`;
       hiddenInput.value = found.id;
+      if (typeof syncVendorFromSelectedClient === 'function') {
+        syncVendorFromSelectedClient(prefix, found);
+      }
       hiddenInput.dispatchEvent(new Event('change'));
     }
   };
@@ -1150,6 +1156,32 @@ function setupClientAutocomplete(prefix) { // prefix = 'nf' o 'nfi'
       dropdown.classList.add('hidden');
     }
   });
+}
+
+function syncVendorFromSelectedClient(prefix, clientObj) {
+  if (!clientObj) return;
+  const vendSelect = document.getElementById(`${prefix}-vendedor`);
+  if (!vendSelect) return;
+
+  const assignedVendId = String(clientObj.vendedorId || '').trim();
+  if (assignedVendId) {
+    // Buscar opción exacta o coincidencia por nombre/ID
+    const matchedOpt = Array.from(vendSelect.options).find(o =>
+      o.value === assignedVendId || matchSellerIdOrName(o.value, assignedVendId)
+    );
+    if (matchedOpt) {
+      vendSelect.value = matchedOpt.value;
+      vendSelect.dispatchEvent(new Event('change'));
+    }
+    // Si el vendedor tiene sucursal asignada, sincronizar sucursal
+    if (assignedVendId !== 'PUBLICO') {
+      const vendObj = (vendedores || []).find(v => v.id === assignedVendId || matchSellerIdOrName(v.id, assignedVendId));
+      const sucSelect = document.getElementById(`${prefix}-sucursal`);
+      if (vendObj && vendObj.sucursalId && sucSelect && Array.from(sucSelect.options).some(o => o.value === vendObj.sucursalId)) {
+        sucSelect.value = vendObj.sucursalId;
+      }
+    }
+  }
 }
 
 // --- INICIALIZACIÓN ---
@@ -3491,7 +3523,7 @@ window.viewNotaDetail = function(notaId, keepView = false) {
   document.getElementById('det-fecha-emision').textContent = nota.fechaEmision;
   document.getElementById('det-fecha-aplicacion').textContent = nota.fechaAplicacion || nota.fechaEmision;
   
-  const ven = vendedores.find(v => v.id === nota.vendedorId);
+  const ven = getNoteEffectiveVendorObj(nota);
   document.getElementById('det-vendedor').textContent = ven ? ven.nombre : (nota.operadorNombre || 'N/A');
   
   document.getElementById('det-ci').textContent = nota.claveInterna || 'N/A';
@@ -3818,21 +3850,27 @@ function refreshAllModuleDropdowns() {
   const hoy = new Date().toISOString().split('T')[0];
   const activeProvs = proveedores.filter(p => !p.eliminado);
 
-  // 1. Catálogo Vendedores
+  // 1. Catálogo Vendedores y Clientes
   fillSelect('cat-ven-sucursal', activeSucs, s => s.nombre);
+  const vendsWithPublico = [{ id: 'PUBLICO', nombre: 'Público / General' }, ...activeVends];
+  fillSelect('cat-cli-vendedor', vendsWithPublico, v => v.nombre);
+  const cliVendSelect = document.getElementById('cat-cli-vendedor');
+  if (cliVendSelect) {
+    cliVendSelect.disabled = !(currentUser && currentUser.rol === 'Administrador');
+  }
 
   // 2. Usuarios
   fillSelect('usr-sucursal', activeSucs, s => s.nombre);
 
   // 3. Notas Físicas Form
   fillSelect('nf-sucursal', activeSucs, s => s.nombre);
-  fillSelect('nf-vendedor', activeVends, v => v.nombre);
+  fillSelect('nf-vendedor', vendsWithPublico, v => v.nombre);
   fillSelect('nf-operador', activeOpes, o => `${o.nombre} - ${o.puesto}`);
 
   // 4. Notas Financieras Form
   const activeSucsFin = activeSucs.filter(s => s.activaFinanciera);
   fillSelect('nfi-sucursal', activeSucsFin, s => s.nombre);
-  fillSelect('nfi-vendedor', activeVends, v => v.nombre);
+  fillSelect('nfi-vendedor', vendsWithPublico, v => v.nombre);
   
   const provSelect = document.getElementById('nfi-proveedor');
   if (provSelect) {
@@ -3857,12 +3895,12 @@ function refreshAllModuleDropdowns() {
   fillSelect('budget-vendedor', budgetVends, v => v.nombre);
 
   // 6. Reportes y Estadísticas Filters
-  fillSelect('rep-vendedor', activeVends, v => v.nombre, true);
+  fillSelect('rep-vendedor', vendsWithPublico, v => v.nombre, true);
   fillSelect('rep-sucursal', activeSucs, s => s.nombre, true);
   fillSelect('rep-cliente', clientes, c => `[${c.codigoInterno}] ${c.nombre}`, true);
   fillSelect('rep-proveedor', activeProvs, p => p.nombre, true);
 
-  fillSelect('stats-vendedor', activeVends, v => v.nombre, true);
+  fillSelect('stats-vendedor', vendsWithPublico, v => v.nombre, true);
   fillSelect('stats-sucursal', activeSucs, s => s.nombre, true);
   fillSelect('stats-cliente', clientes, c => `[${c.codigoInterno}] ${c.nombre}`, true);
   fillSelect('stats-proveedor', activeProvs, p => p.nombre, true);
@@ -4462,11 +4500,18 @@ function setupCatalogosView() {
   // CLIENTES — POST directo a SQL Server, repintar con fetchAPIData()
   document.getElementById('form-cat-cliente').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const idInput = document.getElementById('cat-cli-id')?.value || '';
     const nombre = document.getElementById('cat-cli-nombre').value.trim();
     const codigoInterno = document.getElementById('cat-cli-rfc').value.trim();
     const tieneDerechoDescuento = document.getElementById('cat-cli-descto').checked;
-    const nuevoId = 'C' + Date.now().toString().slice(-8);
-    const newClient = { id: nuevoId, nombre, codigoInterno, tieneDerechoDescuento };
+    const isAdmin = currentUser && currentUser.rol === 'Administrador';
+    const existingCli = idInput ? clientes.find(c => c.id === idInput) : null;
+    const vendedorId = isAdmin
+      ? (document.getElementById('cat-cli-vendedor')?.value || 'PUBLICO')
+      : (existingCli?.vendedorId || 'PUBLICO');
+
+    const nuevoId = idInput || ('C' + Date.now().toString().slice(-8));
+    const newClient = { id: nuevoId, nombre, codigoInterno, tieneDerechoDescuento, vendedorId };
     try {
       const res = await fetch(`${SQL_TUNNEL_BASE}/api/clientes`, {
         method: 'POST',
@@ -4474,8 +4519,8 @@ function setupCatalogosView() {
         body: JSON.stringify(newClient)
       });
       if (res.ok) {
-        alert('Cliente registrado.');
-        document.getElementById('form-cat-cliente').reset();
+        alert(idInput ? 'Cliente actualizado correctamente.' : 'Cliente registrado.');
+        resetClienteForm();
         await fetchAPIData();
       } else {
         alert('Error al guardar el cliente. Intente nuevamente.');
@@ -4483,6 +4528,10 @@ function setupCatalogosView() {
     } catch (err) {
       alert('Sin conexión al servidor SQL. Verifique el túnel Cloudflare.');
     }
+  });
+
+  document.getElementById('btn-cancel-edit-cliente')?.addEventListener('click', () => {
+    resetClienteForm();
   });
 
   // OPERADORES — POST directo a SQL Server, repintar con fetchAPIData()
@@ -4623,21 +4672,102 @@ window.removeProveedor = function(id) {
   }
 };
 
+function resetClienteForm() {
+  const form = document.getElementById('form-cat-cliente');
+  if (form) form.reset();
+  if (document.getElementById('cat-cli-id')) document.getElementById('cat-cli-id').value = '';
+  if (document.getElementById('cat-cli-vendedor')) document.getElementById('cat-cli-vendedor').value = 'PUBLICO';
+  if (document.getElementById('form-cat-cliente-title')) document.getElementById('form-cat-cliente-title').textContent = 'Registrar Cliente';
+  if (document.getElementById('btn-save-cliente')) document.getElementById('btn-save-cliente').textContent = 'Guardar Cliente';
+  document.getElementById('btn-cancel-edit-cliente')?.classList.add('hidden');
+}
+
+window.editCliente = function(id) {
+  const c = clientes.find(cli => cli.id === id);
+  if (!c) return;
+  if (document.getElementById('cat-cli-id')) document.getElementById('cat-cli-id').value = c.id;
+  document.getElementById('cat-cli-nombre').value = c.nombre || '';
+  document.getElementById('cat-cli-rfc').value = c.codigoInterno || c.codigo || '';
+  document.getElementById('cat-cli-descto').checked = !!c.tieneDerechoDescuento;
+  const selVen = document.getElementById('cat-cli-vendedor');
+  if (selVen) {
+    selVen.value = c.vendedorId || 'PUBLICO';
+    selVen.disabled = !(currentUser && currentUser.rol === 'Administrador');
+  }
+  if (document.getElementById('form-cat-cliente-title')) document.getElementById('form-cat-cliente-title').textContent = 'Editar Cliente: ' + c.nombre;
+  if (document.getElementById('btn-save-cliente')) document.getElementById('btn-save-cliente').textContent = 'Actualizar Cliente';
+  document.getElementById('btn-cancel-edit-cliente')?.classList.remove('hidden');
+  document.getElementById('form-cat-cliente-card')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+};
+
+window.quickAssignClientVendor = async function(clienteId, nuevoVendedorId) {
+  if (!currentUser || currentUser.rol !== 'Administrador') {
+    alert('Solo el Administrador puede asignar o cambiar el vendedor de un cliente.');
+    renderCatalogosTables();
+    return;
+  }
+  const c = clientes.find(cli => cli.id === clienteId);
+  if (!c) return;
+  c.vendedorId = nuevoVendedorId || 'PUBLICO';
+  saveData('ca_clientes', clientes);
+  try {
+    const res = await fetch(`${SQL_TUNNEL_BASE}/api/clientes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: c.id,
+        nombre: c.nombre,
+        codigoInterno: c.codigoInterno || c.codigo || c.id,
+        tieneDerechoDescuento: !!c.tieneDerechoDescuento,
+        vendedorId: c.vendedorId
+      })
+    });
+    if (res.ok) {
+      await fetchAPIData();
+    }
+  } catch (err) {
+    console.warn('[quickAssignClientVendor] Error guardando vendedor de cliente:', err);
+  }
+};
+
 function renderCatalogosTables() {
   refreshAllModuleDropdowns();
 
   const canUserDelete = currentUser && (currentUser.rol === 'Administrador' || currentUser.rol === 'Gerente');
+  const isAdmin = currentUser && currentUser.rol === 'Administrador';
+  const activeVends = (vendedores || []).filter(v => !v.eliminado);
 
   const tbodyCli = document.querySelector('#table-cat-clientes tbody');
   if (tbodyCli) {
     tbodyCli.innerHTML = '';
     clientes.filter(c => !c.eliminado).forEach(c => {
+      const assignedVid = c.vendedorId || 'PUBLICO';
+      const vendObj = activeVends.find(v => v.id === assignedVid || matchSellerIdOrName(v.id, assignedVid));
+      const vendLabel = vendObj ? vendObj.nombre : 'Público / General';
+
+      let vendCellHtml = '';
+      if (isAdmin) {
+        const optsHtml = [
+          `<option value="PUBLICO" ${assignedVid === 'PUBLICO' || !vendObj ? 'selected' : ''}>Público / General</option>`,
+          ...activeVends.map(v => `<option value="${v.id}" ${(vendObj && vendObj.id === v.id) ? 'selected' : ''}>${v.nombre}</option>`)
+        ].join('');
+        vendCellHtml = `<select class="form-control" style="font-size:12px; padding:4px 8px; min-width:160px; height:32px;" onchange="quickAssignClientVendor('${c.id}', this.value)">${optsHtml}</select>`;
+      } else {
+        vendCellHtml = `<span class="badge ${vendObj ? 'badge-signed' : 'badge-secondary'}"><i class="fa-solid ${vendObj ? 'fa-user-tie' : 'fa-users'}"></i> ${vendLabel}</span>`;
+      }
+
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td><strong>${c.nombre}</strong></td>
         <td><strong style="color:var(--accent-hover);">${c.codigoInterno}</strong></td>
+        <td>${vendCellHtml}</td>
         <td><span class="badge ${c.tieneDerechoDescuento ? 'badge-signed' : 'badge-draft'}">${c.tieneDerechoDescuento ? 'Sí' : 'No'}</span></td>
-        <td>${canUserDelete ? `<button class="btn btn-danger btn-sm" onclick="removeCliente('${c.id}')"><i class="fa-solid fa-trash"></i></button>` : '-'}</td>
+        <td>
+          <div style="display:flex; gap:6px;">
+            ${canUserDelete ? `<button class="btn btn-secondary btn-sm" onclick="editCliente('${c.id}')" title="Editar Cliente"><i class="fa-solid fa-pen"></i></button>` : ''}
+            ${canUserDelete ? `<button class="btn btn-danger btn-sm" onclick="removeCliente('${c.id}')" title="Eliminar Cliente"><i class="fa-solid fa-trash"></i></button>` : '-'}
+          </div>
+        </td>
       `;
       tbodyCli.appendChild(tr);
     });
@@ -5015,7 +5145,7 @@ window.exportStatisticsToCSV = function() {
   fisicas.forEach(n => {
     const cli = clientes.find(c => c.id === n.clienteId);
     const cliNombre = cli ? cli.nombre : (n.clienteNombre || 'Cliente General');
-    const ven = vendedores.find(v => v.id === n.vendedorId);
+    const ven = getNoteEffectiveVendorObj(n);
     const venNombre = ven ? ven.nombre : (n.vendedorNombre || 'Vendedor');
 
     if (n.productos && n.productos.length > 0) {
@@ -5097,7 +5227,7 @@ window.exportStatisticsToCSV = function() {
   fisicas.forEach(n => {
     const cli = clientes.find(c => c.id === n.clienteId);
     const cliNombre = cli ? cli.nombre : (n.clienteNombre || 'Cliente General');
-    const ven = vendedores.find(v => v.id === n.vendedorId);
+    const ven = getNoteEffectiveVendorObj(n);
     const venNombre = ven ? ven.nombre : (n.vendedorNombre || 'Vendedor');
 
     if (!clientMap[n.clienteId || cliNombre]) {
@@ -5224,8 +5354,9 @@ function calculateAndRenderStatistics() {
     const isCancelada = getNotaDisplayState(n) === 'Cancelada';
     const cli = clientes.find(c => c.id === n.clienteId);
     const cliNombre = cli ? cli.nombre : 'Cliente Desconocido';
-    const ven = vendedores.find(v => v.id === n.vendedorId);
+    const ven = getNoteEffectiveVendorObj(n);
     const venNombre = ven ? ven.nombre : 'Vendedor Desconocido';
+    const venKey = ven ? ven.id : n.vendedorId;
 
     if (!isCancelada) {
       // Sumar a clientes si no está cancelada
@@ -5236,11 +5367,11 @@ function calculateAndRenderStatistics() {
       clientStats[n.clienteId].total += n.total;
 
       // Sumar a vendedores si no está cancelada
-      if (!sellerStats[n.vendedorId]) {
-        sellerStats[n.vendedorId] = { nombre: venNombre, count: 0, total: 0 };
+      if (!sellerStats[venKey]) {
+        sellerStats[venKey] = { nombre: venNombre, count: 0, total: 0 };
       }
-      sellerStats[n.vendedorId].count++;
-      sellerStats[n.vendedorId].total += n.total;
+      sellerStats[venKey].count++;
+      sellerStats[venKey].total += n.total;
     }
 
     // Procesar productos
@@ -5396,10 +5527,10 @@ function calculateAndRenderStatistics() {
     const cliNombre = cliObj ? cliObj.nombre : 'Cliente Desconocido';
     const cliKey = n.clienteId || cliNombre;
 
-    // Identificar Vendedor
-    const venObj = vendedores.find(v => v.id === n.vendedorId);
+    // Identificar Vendedor (asociado al cliente o capturado en la nota)
+    const venObj = getNoteEffectiveVendorObj(n);
     const venNombre = venObj ? venObj.nombre : 'Vendedor Desconocido';
-    const venKey = n.vendedorId || venNombre;
+    const venKey = venObj ? venObj.id : (n.vendedorId || venNombre);
 
     const montoReal = isCancelada ? 0 : (parseFloat(n.total) || 0);
 
@@ -5496,7 +5627,7 @@ function calculateAndRenderStatistics() {
         const isCancelada = getNotaDisplayState(n) === 'Cancelada';
         const suc = sucursales.find(s => s.id === n.sucursalId);
         const cli = clientes.find(c => c.id === n.clienteId);
-        const ven = vendedores.find(v => v.id === n.vendedorId);
+        const ven = getNoteEffectiveVendorObj(n);
         const provObj = proveedores.find(p => p.id === n.proveedorId || p.nombre === n.proveedor);
         const provNombre = provObj ? provObj.nombre : (n.proveedor || 'General');
 
@@ -5564,9 +5695,42 @@ function matchSellerIdOrName(sellerVal, targetVendId) {
   return false;
 }
 
+function getClientAssignedVendorId(clienteIdOrName) {
+  if (!clienteIdOrName) return '';
+  const cli = (clientes || []).find(c =>
+    String(c.id) === String(clienteIdOrName) ||
+    String(c.codigoInterno) === String(clienteIdOrName) ||
+    (c.nombre && String(c.nombre).toLowerCase() === String(clienteIdOrName).toLowerCase())
+  );
+  return (cli && cli.vendedorId) ? String(cli.vendedorId).trim() : '';
+}
+
+function getNoteEffectiveVendorObj(n) {
+  if (!n) return { id: 'PUBLICO', nombre: 'Público / General' };
+  const cliVendId = getClientAssignedVendorId(n.clienteId || n.clienteNombre);
+  if (cliVendId && cliVendId !== 'PUBLICO') {
+    const vFromCli = (vendedores || []).find(v => matchSellerIdOrName(v.id, cliVendId) || matchSellerIdOrName(v.nombre, cliVendId));
+    if (vFromCli) return { id: vFromCli.id, nombre: vFromCli.nombre };
+  }
+  const rawVid = n.vendedorId || n.id_vendedor || n.id_usuario_creador || '';
+  if (String(rawVid).toUpperCase() === 'PUBLICO') {
+    return { id: 'PUBLICO', nombre: 'Público / General' };
+  }
+  const vObj = (vendedores || []).find(v => matchSellerIdOrName(v.id, rawVid) || matchSellerIdOrName(v.nombre, rawVid));
+  if (vObj) return { id: vObj.id, nombre: vObj.nombre };
+  if (cliVendId === 'PUBLICO') return { id: 'PUBLICO', nombre: 'Público / General' };
+  return { id: rawVid || 'PUBLICO', nombre: n.vendedorNombre || 'Público / General' };
+}
+
 function isNoteVendorMatch(n, targetVendId) {
   if (!targetVendId) return true;
-  return matchSellerIdOrName(n.vendedorId, targetVendId) ||
+  const eff = getNoteEffectiveVendorObj(n);
+  if (String(targetVendId).toUpperCase() === 'PUBLICO') {
+    return String(eff.id).toUpperCase() === 'PUBLICO';
+  }
+  return matchSellerIdOrName(eff.id, targetVendId) ||
+         matchSellerIdOrName(eff.nombre, targetVendId) ||
+         matchSellerIdOrName(n.vendedorId, targetVendId) ||
          matchSellerIdOrName(n.id_vendedor, targetVendId) ||
          matchSellerIdOrName(n.firmas?.elaboro, targetVendId) ||
          matchSellerIdOrName(n.idUsuarioCreador, targetVendId) ||
@@ -5686,7 +5850,7 @@ function generateReport() {
   filtradas.forEach(n => {
     const suc = sucursales.find(s => s.id === n.sucursalId || s.id === n.id_sucursal);
     const cliName = n.clienteNombre || n.cliente || (clientes.find(c => c.id === n.clienteId)?.nombre) || 'Cliente General';
-    const ven = vendedores.find(v => v.id === n.vendedorId || v.id === n.id_usuario_creador) || { nombre: n.operadorNombre || n.vendedorNombre || 'Vendedor' };
+    const ven = getNoteEffectiveVendorObj(n);
     
     const displayTotal = parseFloat(n.montoTotal || n.total || n.monto_total || 0);
     const displayState = getNotaDisplayState(n);
