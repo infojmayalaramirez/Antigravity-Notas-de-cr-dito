@@ -4504,6 +4504,19 @@ function setupCatalogosView() {
     const nombre = document.getElementById('cat-cli-nombre').value.trim();
     const codigoInterno = document.getElementById('cat-cli-rfc').value.trim();
     const tieneDerechoDescuento = document.getElementById('cat-cli-descto').checked;
+
+    // Validar que no se duplique el Código Interno en otro cliente activo
+    const dupCli = (clientes || []).find(c =>
+      !c.eliminado &&
+      String(c.id) !== String(idInput) &&
+      String(c.codigoInterno || c.codigo || '').trim().toLowerCase() === codigoInterno.toLowerCase()
+    );
+    if (dupCli) {
+      alert(`No se puede guardar: El Código Interno "${codigoInterno}" ya pertenece al cliente "${dupCli.nombre}". No se permiten clientes con código interno duplicado.`);
+      document.getElementById('cat-cli-rfc').focus();
+      return;
+    }
+
     const isAdmin = currentUser && currentUser.rol === 'Administrador';
     const existingCli = idInput ? clientes.find(c => c.id === idInput) : null;
     const vendedorId = isAdmin
@@ -4522,8 +4535,10 @@ function setupCatalogosView() {
         alert(idInput ? 'Cliente actualizado correctamente.' : 'Cliente registrado.');
         resetClienteForm();
         await fetchAPIData();
+        renderCatalogosTables(true);
       } else {
-        alert('Error al guardar el cliente. Intente nuevamente.');
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || 'Error al guardar el cliente. Intente nuevamente.');
       }
     } catch (err) {
       alert('Sin conexión al servidor SQL. Verifique el túnel Cloudflare.');
@@ -4700,16 +4715,33 @@ window.editCliente = function(id) {
   document.getElementById('form-cat-cliente-card')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 };
 
-window.quickAssignClientVendor = async function(clienteId, nuevoVendedorId) {
+// Mapa temporal para preservar selecciones de vendedor en la tabla de clientes durante el polling de 4s
+const pendingClientVendorSelections = {};
+
+window.onChangeClientVendorSelect = function(clienteId, val) {
+  pendingClientVendorSelections[clienteId] = val;
+  const btn = document.getElementById(`btn-save-cli-vend-${clienteId}`);
+  if (btn) {
+    btn.style.backgroundColor = '#16a34a';
+    btn.style.borderColor = '#16a34a';
+    btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Guardar*';
+  }
+};
+
+window.saveClientVendorRow = async function(clienteId) {
   if (!currentUser || currentUser.rol !== 'Administrador') {
     alert('Solo el Administrador puede asignar o cambiar el vendedor de un cliente.');
-    renderCatalogosTables();
     return;
   }
+  const sel = document.getElementById(`cli-vend-sel-${clienteId}`);
+  const nuevoVendedorId = sel ? sel.value : (pendingClientVendorSelections[clienteId] || 'PUBLICO');
   const c = clientes.find(cli => cli.id === clienteId);
   if (!c) return;
+
   c.vendedorId = nuevoVendedorId || 'PUBLICO';
+  delete pendingClientVendorSelections[clienteId];
   saveData('ca_clientes', clientes);
+
   try {
     const res = await fetch(`${SQL_TUNNEL_BASE}/api/clientes`, {
       method: 'POST',
@@ -4723,27 +4755,42 @@ window.quickAssignClientVendor = async function(clienteId, nuevoVendedorId) {
       })
     });
     if (res.ok) {
+      const vendObj = (vendedores || []).find(v => v.id === c.vendedorId);
+      const vendNom = vendObj ? vendObj.nombre : 'Público / General';
+      alert(`✓ Vendedor "${vendNom}" guardado correctamente para el cliente "${c.nombre}".`);
       await fetchAPIData();
+      renderCatalogosTables(true);
+    } else {
+      const errData = await res.json().catch(() => ({}));
+      alert(errData.error || 'Error al guardar el vendedor del cliente.');
     }
   } catch (err) {
-    console.warn('[quickAssignClientVendor] Error guardando vendedor de cliente:', err);
+    alert('Sin conexión al servidor SQL.');
   }
 };
 
-function renderCatalogosTables() {
+window.quickAssignClientVendor = window.saveClientVendorRow;
+
+function renderCatalogosTables(force = false) {
   refreshAllModuleDropdowns();
+
+  // Si el usuario tiene abierto/enfocado un selector o input dentro de la tabla de clientes, no destruir el DOM en el polling automático
+  const tbodyCli = document.querySelector('#table-cat-clientes tbody');
+  const activeEl = document.activeElement;
+  const isInteractingWithCliTable = !force && activeEl && tbodyCli && tbodyCli.contains(activeEl);
 
   const canUserDelete = currentUser && (currentUser.rol === 'Administrador' || currentUser.rol === 'Gerente');
   const isAdmin = currentUser && currentUser.rol === 'Administrador';
   const activeVends = (vendedores || []).filter(v => !v.eliminado);
 
-  const tbodyCli = document.querySelector('#table-cat-clientes tbody');
-  if (tbodyCli) {
+  if (tbodyCli && !isInteractingWithCliTable) {
     tbodyCli.innerHTML = '';
     clientes.filter(c => !c.eliminado).forEach(c => {
-      const assignedVid = c.vendedorId || 'PUBLICO';
+      const pendingVal = pendingClientVendorSelections[c.id];
+      const assignedVid = pendingVal !== undefined ? pendingVal : (c.vendedorId || 'PUBLICO');
       const vendObj = activeVends.find(v => v.id === assignedVid || matchSellerIdOrName(v.id, assignedVid));
       const vendLabel = vendObj ? vendObj.nombre : 'Público / General';
+      const hasUnsaved = pendingVal !== undefined && pendingVal !== (c.vendedorId || 'PUBLICO');
 
       let vendCellHtml = '';
       if (isAdmin) {
@@ -4751,7 +4798,14 @@ function renderCatalogosTables() {
           `<option value="PUBLICO" ${assignedVid === 'PUBLICO' || !vendObj ? 'selected' : ''}>Público / General</option>`,
           ...activeVends.map(v => `<option value="${v.id}" ${(vendObj && vendObj.id === v.id) ? 'selected' : ''}>${v.nombre}</option>`)
         ].join('');
-        vendCellHtml = `<select class="form-control" style="font-size:12px; padding:4px 8px; min-width:160px; height:32px;" onchange="quickAssignClientVendor('${c.id}', this.value)">${optsHtml}</select>`;
+        vendCellHtml = `
+          <div style="display:flex; gap:6px; align-items:center;">
+            <select id="cli-vend-sel-${c.id}" class="form-control" style="font-size:12px; padding:4px 8px; min-width:155px; height:32px;" onchange="onChangeClientVendorSelect('${c.id}', this.value)">${optsHtml}</select>
+            <button type="button" id="btn-save-cli-vend-${c.id}" class="btn btn-primary btn-sm" style="height:32px; padding:0 10px; white-space:nowrap; ${hasUnsaved ? 'background-color:#16a34a; border-color:#16a34a;' : ''}" onclick="saveClientVendorRow('${c.id}')" title="Guardar Vendedor Asignado">
+              <i class="fa-solid fa-floppy-disk"></i> ${hasUnsaved ? 'Guardar*' : 'Guardar'}
+            </button>
+          </div>
+        `;
       } else {
         vendCellHtml = `<span class="badge ${vendObj ? 'badge-signed' : 'badge-secondary'}"><i class="fa-solid ${vendObj ? 'fa-user-tie' : 'fa-users'}"></i> ${vendLabel}</span>`;
       }
@@ -4764,8 +4818,8 @@ function renderCatalogosTables() {
         <td><span class="badge ${c.tieneDerechoDescuento ? 'badge-signed' : 'badge-draft'}">${c.tieneDerechoDescuento ? 'Sí' : 'No'}</span></td>
         <td>
           <div style="display:flex; gap:6px;">
-            ${canUserDelete ? `<button class="btn btn-secondary btn-sm" onclick="editCliente('${c.id}')" title="Editar Cliente"><i class="fa-solid fa-pen"></i></button>` : ''}
-            ${canUserDelete ? `<button class="btn btn-danger btn-sm" onclick="removeCliente('${c.id}')" title="Eliminar Cliente"><i class="fa-solid fa-trash"></i></button>` : '-'}
+            ${canUserDelete ? `<button type="button" class="btn btn-secondary btn-sm" onclick="editCliente('${c.id}')" title="Editar Cliente"><i class="fa-solid fa-pen"></i> Editar</button>` : ''}
+            ${canUserDelete ? `<button type="button" class="btn btn-danger btn-sm" onclick="removeCliente('${c.id}')" title="Eliminar Cliente"><i class="fa-solid fa-trash"></i></button>` : '-'}
           </div>
         </td>
       `;

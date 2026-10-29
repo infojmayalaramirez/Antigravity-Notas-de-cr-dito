@@ -807,6 +807,25 @@ app.post('/api/clientes', async (req, res) => {
         if (!cId || !cNom) return res.status(400).json({ error: 'id y nombre son requeridos' });
 
         const pool = await getPool();
+
+        // Validar que el código interno no esté duplicado en otro cliente activo
+        const dupCheck = await pool.request()
+            .input('id',  sql.VarChar, cId)
+            .input('cod', sql.VarChar, cCod)
+            .query(`
+                SELECT TOP 1 id_cliente, nombre
+                FROM dbo.Clientes
+                WHERE ISNULL(eliminado, 0) = 0
+                  AND LOWER(LTRIM(RTRIM(ISNULL(codigo_interno, '')))) = LOWER(LTRIM(RTRIM(@cod)))
+                  AND id_cliente <> @id
+            `);
+        if (dupCheck.recordset.length > 0) {
+            const dup = dupCheck.recordset[0];
+            return res.status(409).json({
+                error: `El Código Interno "${cCod}" ya está registrado con el cliente "${dup.nombre}". No se permiten códigos internos duplicados.`
+            });
+        }
+
         await pool.request()
             .input('id',   sql.VarChar, cId)
             .input('nom',  sql.VarChar, cNom)
