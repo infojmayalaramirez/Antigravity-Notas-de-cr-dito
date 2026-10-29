@@ -433,8 +433,11 @@
             <div class="card">
               <div class="card-title">
                 <span>Notas de Crédito de Producto Físico y Logística</span>
-                <button class="btn btn-primary" id="btn-new-nota-fisica"><i class="fa-solid fa-plus"></i> Crear Nota
-                  Física</button>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                  <button class="btn btn-secondary" id="btn-go-lotes-reparto" onclick="switchView('lotes')"><i class="fa-solid fa-print"></i> Imprimir Lote para Reparto</button>
+                  <button class="btn btn-primary" id="btn-new-nota-fisica"><i class="fa-solid fa-plus"></i> Crear Nota
+                    Física</button>
+                </div>
               </div>
               <div
                 style="display:flex; gap:12px; margin-bottom:15px; flex-wrap:wrap; background:#f8fafc; padding:12px; border-radius:var(--radius-sm); border:1px solid var(--border-color); align-items:flex-end;">
@@ -1084,9 +1087,9 @@
         <!-- 3.1. LOTES DE IMPRESIÓN VIEW -->
         <div id="view-lotes" class="view-section hidden">
           <div class="card">
-            <div class="card-title">Pre-impresión de Lotes de Notas de Crédito en Blanco</div>
+            <div class="card-title">Pre-impresión de Lotes de Notas de Crédito en Blanco (Envío en Reparto)</div>
             <p style="margin-bottom: 20px; color: var(--text-muted);">
-              Genera un archivo de folios consecutivos listos para uso y control. Cada hoja tamaño carta impresa
+              Genera un lote de folios consecutivos listos para mandar en el reparto y control logístico. Cada hoja tamaño carta impresa
               contiene una nota dividida en dos mitades (la mitad superior es el <strong>ORIGINAL</strong> y la mitad
               inferior es la <strong>COPIA</strong>), idéntica al formato oficial.
             </p>
@@ -1266,11 +1269,12 @@
                     🏢 2. Gerente de Sucursal
                   </div>
                   <div style="font-size: 11px; color: var(--text-muted); line-height: 1.45;">
-                    <strong>Nivel 2 (Supervisión)</strong><br>
+                    <strong>Nivel 2 (Supervisión y Operación)</strong><br>
                     • Control total de su sucursal asignada.<br>
+                    • <strong>Emisión de Notas Físicas y Financieras</strong>.<br>
+                    • <strong>Impresión de lotes de folios para reparto</strong>.<br>
                     • Asignación de presupuestos por vendedor.<br>
                     • Autorización y firma digital de notas.<br>
-                    • Alertas e informes gerenciales.<br>
                     • <strong style="color:#b91c1c;">Cancelación de notas de su sucursal</strong>.
                   </div>
                 </div>
@@ -1293,9 +1297,10 @@
                     📊 4. Contabilidad Central
                   </div>
                   <div style="font-size: 11px; color: var(--text-muted); line-height: 1.45;">
-                    <strong>Nivel 3 (Control Financiero)</strong><br>
-                    • Revisión y conciliación fiscal.<br>
-                    • Auditoría de impuestos (IVA / IEPS).<br>
+                    <strong>Nivel 3 (Control Financiero y Operativo)</strong><br>
+                    • <strong>Emisión de Notas Físicas y Financieras</strong>.<br>
+                    • <strong>Impresión de lotes de folios para reparto</strong>.<br>
+                    • Revisión, conciliación fiscal y auditoría (IVA / IEPS).<br>
                     • Firma digital de validación financiera.<br>
                     • Reportes e historial de Faltantes Picking.
                   </div>
@@ -1357,25 +1362,25 @@
                     <tr style="background:#fafafa;">
                       <td style="padding: 7px 12px; font-weight:600;">Notas Físicas</td>
                       <td style="text-align:center;"><span class="badge badge-signed">✓ Full / Autoriza</span></td>
-                      <td style="text-align:center;"><span class="badge badge-signed">✓ Autoriza Sucursal</span></td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Captura / Autoriza</span></td>
                       <td style="text-align:center;"><span class="badge badge-warning">✍️ Firma Recepción</span></td>
-                      <td style="text-align:center;"><span class="badge badge-secondary">👁️ Consulta</span></td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Captura / Consulta</span></td>
                       <td style="text-align:center;"><span class="badge badge-draft">📝 Captura Solicitud</span></td>
                     </tr>
                     <tr>
                       <td style="padding: 7px 12px; font-weight:600;">Notas Financieras</td>
                       <td style="text-align:center;"><span class="badge badge-signed">✓ Full / Autoriza</span></td>
-                      <td style="text-align:center;"><span class="badge badge-signed">✓ Autoriza Sucursal</span></td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Captura / Autoriza</span></td>
                       <td style="text-align:center; color:var(--text-muted);">-</td>
-                      <td style="text-align:center;"><span class="badge badge-warning">✍️ Firma Auditoría</span></td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Captura / Firma Auditoría</span></td>
                       <td style="text-align:center;"><span class="badge badge-draft">📝 Captura Solicitud</span></td>
                     </tr>
                     <tr style="background:#fafafa;">
-                      <td style="padding: 7px 12px; font-weight:600;">Lotes de Folios Impresos</td>
-                      <td style="text-align:center;"><span class="badge badge-signed">✓ Global</span></td>
-                      <td style="text-align:center;"><span class="badge badge-signed">✓ Sucursal</span></td>
+                      <td style="padding: 7px 12px; font-weight:600;">Lotes de Folios Impresos (Reparto)</td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Impresión Global</span></td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Impresión Reparto</span></td>
                       <td style="text-align:center; color:var(--text-muted);">-</td>
-                      <td style="text-align:center; color:var(--text-muted);">-</td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Impresión Reparto</span></td>
                       <td style="text-align:center; color:var(--text-muted);">-</td>
                     </tr>
                     <tr>
@@ -2215,8 +2220,8 @@
   </div>
 
   <!-- Scripts -->
-  <script src="mockData.js?v=36"></script>
-  <script src="app.js?v=36"></script>
+  <script src="mockData.js?v=37"></script>
+  <script src="app.js?v=37"></script>
 
   <!-- Inicialización de Gráficas de Inteligencia de Negocio (Chart.js) -->
   <script>

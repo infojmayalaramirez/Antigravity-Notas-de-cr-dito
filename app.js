@@ -1544,11 +1544,13 @@ function applyRolePermissions() {
     btnClearCat.style.display = canEditCatalogos ? 'inline-flex' : 'none';
   }
 
-  // Botones de crear nota según rol
+  // Botones de crear nota e imprimir lotes según rol
   const btnNewFisica = document.getElementById('btn-new-nota-fisica');
   const btnNewFinanciera = document.getElementById('btn-new-nota-financiera');
-  const canCreateFisica = ['Administrador', 'Gerente', 'Vendedor'].includes(rol);
-  const canCreateFinanciera = ['Administrador', 'Gerente', 'Vendedor'].includes(rol);
+  const btnGoLotesReparto = document.getElementById('btn-go-lotes-reparto');
+  const canCreateFisica = ['Administrador', 'Gerente', 'Contabilidad', 'Vendedor'].includes(rol);
+  const canCreateFinanciera = ['Administrador', 'Gerente', 'Contabilidad', 'Vendedor'].includes(rol);
+  const canPrintLotes = ['Administrador', 'Gerente', 'Contabilidad'].includes(rol);
   if (btnNewFisica) {
     if (canCreateFisica) btnNewFisica.classList.remove('hidden');
     else btnNewFisica.classList.add('hidden');
@@ -1557,13 +1559,17 @@ function applyRolePermissions() {
     if (canCreateFinanciera) btnNewFinanciera.classList.remove('hidden');
     else btnNewFinanciera.classList.add('hidden');
   }
+  if (btnGoLotesReparto) {
+    if (canPrintLotes) btnGoLotesReparto.classList.remove('hidden');
+    else btnGoLotesReparto.classList.add('hidden');
+  }
 
   // 2. Control de accesos de la barra de navegación según Rol y Obligaciones
   const roleAllowedViews = {
     'Administrador': ['dashboard', 'notas-fisicas', 'notas-financieras', 'lotes', 'presupuestos', 'sucursales', 'usuarios', 'catalogos', 'reportes', 'faltantes-picking'],
     'Gerente': ['dashboard', 'notas-fisicas', 'notas-financieras', 'lotes', 'presupuestos', 'catalogos', 'reportes', 'faltantes-picking'],
     'Almacen': ['dashboard', 'notas-fisicas', 'catalogos', 'faltantes-picking'],
-    'Contabilidad': ['dashboard', 'notas-fisicas', 'notas-financieras', 'catalogos', 'reportes', 'faltantes-picking'],
+    'Contabilidad': ['dashboard', 'notas-fisicas', 'notas-financieras', 'lotes', 'catalogos', 'reportes', 'faltantes-picking'],
     'Vendedor': ['dashboard', 'notas-fisicas', 'notas-financieras', 'presupuestos', 'catalogos']
   };
   const allowedSet = new Set(roleAllowedViews[rol] || roleAllowedViews['Vendedor']);
@@ -1612,7 +1618,7 @@ function switchView(viewName) {
       'Administrador': ['dashboard', 'notas-fisicas', 'notas-financieras', 'lotes', 'presupuestos', 'sucursales', 'usuarios', 'catalogos', 'reportes', 'faltantes-picking'],
       'Gerente': ['dashboard', 'notas-fisicas', 'notas-financieras', 'lotes', 'presupuestos', 'catalogos', 'reportes', 'faltantes-picking'],
       'Almacen': ['dashboard', 'notas-fisicas', 'catalogos', 'faltantes-picking'],
-      'Contabilidad': ['dashboard', 'notas-fisicas', 'notas-financieras', 'catalogos', 'reportes', 'faltantes-picking'],
+      'Contabilidad': ['dashboard', 'notas-fisicas', 'notas-financieras', 'lotes', 'catalogos', 'reportes', 'faltantes-picking'],
       'Vendedor': ['dashboard', 'notas-fisicas', 'notas-financieras', 'presupuestos', 'catalogos']
     };
     const allowedList = roleAllowedViews[rol] || roleAllowedViews['Vendedor'];
@@ -2885,7 +2891,7 @@ async function submitPhysicalNote(isDraft) {
     total: totalGeneralVal,
     incidenciaFoto,
     firmas: {
-      elaboro: currentUser.rol === 'Vendedor' || currentUser.rol === 'Administrador' ? currentUser.id : null,
+      elaboro: currentUser.id,
       almacen: null,
       autorizo: (currentUser.rol === 'Gerente' || currentUser.rol === 'Administrador') ? currentUser.id : null,
       cliente: null
@@ -3411,7 +3417,7 @@ async function submitFinancialNote(isDraft) {
     firmas: {
       elaboro: currentUser.id,
       almacen: null,
-      contabilidad: null,
+      contabilidad: currentUser.rol === 'Contabilidad' ? currentUser.id : null,
       autorizo: (currentUser.rol === 'Gerente' || currentUser.rol === 'Administrador') && !esPendiente ? currentUser.id : null,
       cliente: null
     },
@@ -3693,7 +3699,7 @@ function updateDetailedSignaturesSection(nota) {
       const canSign = !isCancelada && (
         rol === 'Administrador' ||
         rol === req.rol ||
-        (req.key === 'elaboro' && rol === 'Gerente')
+        (req.key === 'elaboro' && (rol === 'Gerente' || rol === 'Contabilidad'))
       );
       if (canSign) {
         btnEl.style.display = 'inline-block';
@@ -5745,9 +5751,11 @@ function setupLotesPrintView() {
         });
         if (res.ok) {
           const data = await res.json();
-          if (data.ok && data.desdeFolio) {
-            startFolio = parseInt(data.desdeFolio, 10);
-            window.ultimoFolioReservado = parseInt(data.hastaFolio, 10) || (startFolio + cantidad - 1);
+          const desde = data.desdeFolio || data.inicio;
+          const hasta = data.hastaFolio || data.fin;
+          if ((data.ok || data.success) && desde) {
+            startFolio = parseInt(desde, 10);
+            window.ultimoFolioReservado = parseInt(hasta, 10) || (startFolio + cantidad - 1);
           }
         }
       }

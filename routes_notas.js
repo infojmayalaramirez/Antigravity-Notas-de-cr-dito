@@ -262,7 +262,7 @@ module.exports = function registrarRutasNotas(app, ctx) {
                     else if (key === 'almacen') permitido = esAdmin || (user.rol === 'Almacen' && (mismaSuc || !n.sucursalId));
                     else if (key === 'contabilidad') permitido = esAdmin || user.rol === 'Contabilidad';
                     else if (key === 'elaboro') {
-                        permitido = esAdmin;
+                        permitido = esAdmin || user.rol === 'Gerente' || user.rol === 'Contabilidad';
                         if (!permitido && user.rol === 'Vendedor') {
                             const v = await pool.request().input('v', sql.VarChar, String(n.vendedorId))
                                 .query(`SELECT id_usuario, nombre FROM dbo.Vendedores WHERE id_vendedor=@v`);
@@ -328,7 +328,7 @@ module.exports = function registrarRutasNotas(app, ctx) {
                 return { inicio, fin };
             });
             console.log(`[Folios] Reservado lote ${out.inicio}-${out.fin}`);
-            res.json({ success: true, ...out });
+            res.json({ success: true, ok: true, inicio: out.inicio, fin: out.fin, desdeFolio: out.inicio, hastaFolio: out.fin });
         } catch (error) {
             res.status(500).json({ error: error.message });
         }
