@@ -69,9 +69,17 @@ let activeTunnelUrl = null;
 let pingFailureCount = 0;
 let isStartingTunnel = false;
 let isGitPushing = false;
+let tunnelRetryTimer = null;
 
 // Mata de forma garantizada todos los procesos de cloudflared en Windows
 function killAllCloudflared(callback) {
+    if (tunnelRetryTimer) {
+        clearTimeout(tunnelRetryTimer);
+        tunnelRetryTimer = null;
+    }
+    if (cfProcess) {
+        cfProcess._intentionallyKilled = true;
+    }
     exec('taskkill /F /IM cloudflared.exe', () => {
         cfProcess = null;
         if (typeof callback === 'function') callback();
@@ -99,8 +107,8 @@ function launchTunnel() {
         }
 
         const tunnelArgs = (cfConfig && cfConfig.token)
-            ? ['tunnel', '--protocol', 'http2', 'run', '--url', 'http://127.0.0.1:3000', '--token', cfConfig.token.trim()]
-            : ['tunnel', '--url', 'http://127.0.0.1:3000', '--protocol', 'http2'];
+            ? ['tunnel', '--edge-ip-version', '4', '--protocol', 'http2', 'run', '--url', 'http://127.0.0.1:3000', '--token', cfConfig.token.trim()]
+            : ['tunnel', '--edge-ip-version', '4', '--url', 'http://127.0.0.1:3000', '--protocol', 'http2'];
 
         if (cfConfig && cfConfig.url && cfConfig.token) {
             const fixedUrl = cfConfig.url.trim().replace(/\/+$/, '');
@@ -174,27 +182,32 @@ function launchTunnel() {
         child.stderr.on('data', onData);
 
         child.on('close', (code) => {
+            if (child._intentionallyKilled) return;
             cfProcess = null;
-            const waitMs = hasRateLimit ? 300000 : 30000;
+            const waitMs = hasRateLimit ? 300000 : 15000;
             if (hasRateLimit) {
                 console.warn(`[Cloudflare] ⚠️ Rate limit activo (Error 1015/429). Pausando reintentos por 5 minutos para enfriar la IP...`);
             } else {
-                console.warn(`[Cloudflare] Proceso de túnel cerrado (código ${code}). Reintentando en 30s...`);
+                console.warn(`[Cloudflare] Proceso de túnel cerrado (código ${code}). Reintentando en 15s...`);
             }
-            setTimeout(launchTunnel, waitMs);
+            if (tunnelRetryTimer) clearTimeout(tunnelRetryTimer);
+            tunnelRetryTimer = setTimeout(launchTunnel, waitMs);
         });
 
         child.on('error', (err) => {
+            if (child._intentionallyKilled) return;
             console.error('[Cloudflare] Error ejecutando cloudflared:', err.message);
             cfProcess = null;
-            setTimeout(launchTunnel, 30000);
+            if (tunnelRetryTimer) clearTimeout(tunnelRetryTimer);
+            tunnelRetryTimer = setTimeout(launchTunnel, 15000);
         });
     });
 }
 
 function restartTunnel() {
     killAllCloudflared(() => {
-        setTimeout(launchTunnel, 5000);
+        if (tunnelRetryTimer) clearTimeout(tunnelRetryTimer);
+        tunnelRetryTimer = setTimeout(launchTunnel, 3000);
     });
 }
 
@@ -205,6 +218,33 @@ process.on('SIGTERM', () => { killAllCloudflared(); process.exit(); });
 
 // Iniciar el túnel automáticamente al arrancar Node.js
 setTimeout(launchTunnel, 2000);
+
+// Watchdog automático: si la laptop cambia de red Wi-Fi o sale de suspensión y el túnel queda colgado (Error 1033), reconectar automáticamente
+setInterval(() => {
+    if (!activeTunnelUrl || isStartingTunnel) return;
+    const req = https.get(`${activeTunnelUrl}/api/ping`, { family: 4, timeout: 8000 }, (res) => {
+        res.resume();
+        if (res.statusCode === 200) {
+            pingFailureCount = 0;
+        } else {
+            pingFailureCount++;
+            if (pingFailureCount >= 2) {
+                console.warn(`[Cloudflare Watchdog] ⚠️ Túnel devolvió HTTP ${res.statusCode} tras cambio de red. Reconectando túnel...`);
+                pingFailureCount = 0;
+                restartTunnel();
+            }
+        }
+    });
+    req.on('timeout', () => { req.destroy(); });
+    req.on('error', () => {
+        pingFailureCount++;
+        if (pingFailureCount >= 2) {
+            console.warn('[Cloudflare Watchdog] ⚠️ Túnel sin respuesta tras cambio de red. Reconectando túnel...');
+            pingFailureCount = 0;
+            restartTunnel();
+        }
+    });
+}, 35000);
 
 // =====================================================================
 // SETUP DE ESQUEMA SQL SERVER
