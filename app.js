@@ -90,24 +90,25 @@ let notas = (_persistedCache && Array.isArray(_persistedCache.notas)) ? _persist
 let faltantesPicking = (_persistedCache && Array.isArray(_persistedCache.faltantesPicking)) ? _persistedCache.faltantesPicking : [];
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
-// --- SINCRONIZACIÓN DIRECTA CON SQL SERVER VÍA CLOUDFLARE TUNNEL ---
-// La URL del túnel se descarga dinámicamente de GitHub en cada arranque.
-// Así Netlify NUNCA necesita redesplegar cuando cambia el túnel.
-
-const PERMANENT_TUNNEL_URL = 'https://controlcasayala.com';
+// --- SINCRONIZACIÓN HÍBRIDA 24/7: SQL SERVER + GOOGLE CLOUD FIREBASE ---
+const PERMANENT_TUNNEL_URL = 'https://sql.controlcasayala.com';
+const FIREBASE_RTDB_URL = 'https://casa-ayala-905ab-default-rtdb.firebaseio.com';
 const GITHUB_TUNNEL_FILE = 'https://raw.githubusercontent.com/infojmayalaramirez/Antigravity-Notas-de-cr-dito/main/current_tunnel.json';
 let SQL_TUNNEL_BASE = ''; // Se llena automáticamente al arrancar
 const CLOUD_SYNC_ENDPOINT = '/.netlify/functions/sync';
 let isSyncingWithCloud = false;
 let cloudPushTimer = null;
 let isMergingFromCloud = false;
+window._lastBackendSource = 'cloud';
 
-// Detectar si corremos desde el mismo servidor (localhost, dominio propio o túnel)
-// En ese caso, las peticiones van al mismo origen sin necesitar la URL del túnel
+// Guardar referencia al fetch nativo del navegador antes de instalar el interceptor Cloud 24/7
+const _nativeFetch = window.fetch.bind(window);
+
+// Detectar si corremos directamente desde el servidor SQL local
 const IS_SAME_ORIGIN = (
   window.location.hostname === 'localhost' ||
   window.location.hostname === '127.0.0.1' ||
-  window.location.hostname.includes('controlcasayala.com') ||
+  window.location.hostname === 'sql.controlcasayala.com' ||
   window.location.hostname.includes('trycloudflare.com') ||
   window.location.hostname.includes('192.168.') ||
   window.location.hostname.includes('26.179.')
@@ -116,104 +117,474 @@ const IS_SAME_ORIGIN = (
 // Resolver la URL del servidor SQL dinámicamente
 async function resolveServerURL() {
   if (IS_SAME_ORIGIN) {
-    // Corremos desde el servidor mismo o la red local — usar origen relativo
     SQL_TUNNEL_BASE = window.location.origin;
     console.log('[SQL] Modo directo:', SQL_TUNNEL_BASE);
     return;
   }
 
-  // Usar dominio permanente por defecto
   SQL_TUNNEL_BASE = PERMANENT_TUNNEL_URL;
   localStorage.setItem('ca_last_active_tunnel', SQL_TUNNEL_BASE);
-  console.log('[SQL] Conectado a dominio fijo:', SQL_TUNNEL_BASE);
-  return;
+  console.log('[SQL] Conectado a túnel SQL + respaldo Google Cloud 24/7:', SQL_TUNNEL_BASE);
+}
 
-  const isValidTunnel = (u) => typeof u === 'string' && u.startsWith('https://') && !u.includes('api.trycloudflare.com');
+function normalizeFirebaseStore(fbData) {
+  const d = fbData && typeof fbData === 'object' ? fbData : {};
+  const toArr = (v) => Array.isArray(v) ? v.filter(Boolean) : (v && typeof v === 'object' ? Object.values(v).filter(Boolean) : []);
+  return {
+    usuarios: toArr(d.usuarios),
+    sucursales: toArr(d.sucursales),
+    clientes: toArr(d.clientes),
+    operadores: toArr(d.operadores),
+    vendedores: toArr(d.vendedores),
+    proveedores: toArr(d.proveedores),
+    presupuestos: toArr(d.presupuestos),
+    notas: toArr(d.notas),
+    faltantes: toArr(d.faltantes || d.faltantesPicking),
+    ultimoFolioReservado: Number(d.ultimoFolioReservado) || 0,
+    updatedAt: d.updatedAt || new Date().toISOString()
+  };
+}
 
-  // 1. Intentar GitHub API directa con timeout de 3 segundos
+async function fetchStoreFromFirebase() {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5000);
   try {
-    const apiCtrl = new AbortController();
-    const apiTimer = setTimeout(() => apiCtrl.abort(), 3000);
-    const apiRes = await fetch('https://api.github.com/repos/infojmayalaramirez/Antigravity-Notas-de-cr-dito/contents/current_tunnel.json?t=' + Date.now(), {
-      headers: { 'Accept': 'application/vnd.github.v3+json' },
+    const res = await _nativeFetch(`${FIREBASE_RTDB_URL}/store.json?t=${Date.now()}`, {
       cache: 'no-store',
-      signal: apiCtrl.signal
+      headers: { 'Accept': 'application/json' },
+      signal: ctrl.signal
     });
-    clearTimeout(apiTimer);
-    if (apiRes.ok) {
-      const apiData = await apiRes.json();
-      if (apiData && apiData.content) {
-        const decoded = JSON.parse(atob(apiData.content.replace(/\s/g, '')));
-        if (decoded && isValidTunnel(decoded.url)) {
-          SQL_TUNNEL_BASE = decoded.url;
-          localStorage.setItem('ca_last_active_tunnel', SQL_TUNNEL_BASE);
-          console.log('[SQL] URL fresca desde GitHub API:', SQL_TUNNEL_BASE, '(actualizado:', decoded.updated, ')');
-          return;
-        }
-      }
-    }
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const raw = await res.json();
+    if (!raw || typeof raw !== 'object') return null;
+    return normalizeFirebaseStore(raw);
   } catch (e) {
-    console.warn('[SQL] GitHub API no disponible o timeout:', e.message);
-  }
-
-  // 2. Intentar raw.githubusercontent.com con cache-buster y timeout de 3s
-  try {
-    const rawCtrl = new AbortController();
-    const rawTimer = setTimeout(() => rawCtrl.abort(), 3000);
-    const r = await fetch(GITHUB_TUNNEL_FILE + '?t=' + Date.now(), { cache: 'no-store', signal: rawCtrl.signal });
-    clearTimeout(rawTimer);
-    if (r.ok) {
-      const data = await r.json();
-      if (data && isValidTunnel(data.url)) {
-        SQL_TUNNEL_BASE = data.url;
-        localStorage.setItem('ca_last_active_tunnel', SQL_TUNNEL_BASE);
-        console.log('[SQL] URL del túnel desde GitHub Raw:', SQL_TUNNEL_BASE);
-        return;
-      }
-    }
-  } catch (e) {
-    console.warn('[SQL] Error leyendo raw GitHub:', e.message);
-  }
-
-  // 3. Fallback: usar el último túnel activo recordado en el dispositivo
-  const cached = localStorage.getItem('ca_last_active_tunnel');
-  if (isValidTunnel(cached)) {
-    SQL_TUNNEL_BASE = cached;
-    console.log('[SQL] Usando última URL conocida guardada en dispositivo:', SQL_TUNNEL_BASE);
-  } else if (cached) {
-    localStorage.removeItem('ca_last_active_tunnel');
+    clearTimeout(timer);
+    return null;
   }
 }
 
-// Función principal: obtiene TODOS los datos reales del SQL Server via túnel con timeout estricto de 4s
+async function saveStoreToFirebase(storeObj) {
+  const payload = {
+    ...normalizeFirebaseStore(storeObj),
+    updatedAt: new Date().toISOString()
+  };
+  const res = await _nativeFetch(`${FIREBASE_RTDB_URL}/store.json`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify(payload)
+  });
+  return res.ok;
+}
+
+// Motor API en la Nube (Google Cloud Firebase 24/7) para cuando la laptop con SQL Server está apagada
+async function handleFirebaseCloudAPI(apiPath, method, bodyText) {
+  let body = {};
+  if (bodyText) {
+    try { body = typeof bodyText === 'string' ? JSON.parse(bodyText) : bodyText; } catch (e) { body = {}; }
+  }
+  const makeResp = (obj, status = 200) => new Response(JSON.stringify(obj), {
+    status,
+    headers: { 'Content-Type': 'application/json' }
+  });
+
+  const store = (await fetchStoreFromFirebase()) || normalizeFirebaseStore({
+    usuarios, sucursales, clientes, operadores, vendedores, proveedores, presupuestos, notas,
+    faltantes: faltantesPicking, ultimoFolioReservado: window.ultimoFolioReservado || 0
+  });
+
+  const cleanPath = apiPath.split('?')[0];
+  const m = (method || 'GET').toUpperCase();
+
+  // 1. GET /api/catalogos/all
+  if (m === 'GET' && cleanPath === '/api/catalogos/all') {
+    window._lastBackendSource = 'firebase';
+    return makeResp(store, 200);
+  }
+
+  // 2. POST /api/login
+  if (m === 'POST' && cleanPath === '/api/login') {
+    const login = String(body.login || '').trim().toLowerCase();
+    const nip = String(body.nip || '').trim();
+    const usr = store.usuarios.find(u => {
+      const uId = String(u.id || u.id_usuario || '').trim().toLowerCase();
+      const uEmail = String(u.email || '').trim().toLowerCase();
+      const uNom = String(u.nombre || '').trim().toLowerCase();
+      return (uId === login || uEmail === login || uNom === login) && String(u.nip || '').trim() === nip;
+    });
+    if (!usr) return makeResp({ success: false, message: 'Usuario o NIP incorrecto.' }, 401);
+    if (usr.bloqueado) return makeResp({ success: false, message: 'Cuenta bloqueada. Contacte al Administrador.' }, 403);
+    return makeResp({ success: true, user: usr }, 200);
+  }
+
+  // 3. POST /api/clientes & DELETE /api/clientes/:id
+  if (cleanPath === '/api/clientes' && m === 'POST') {
+    const cId = String(body.id || '').trim();
+    const cNom = String(body.nombre || '').trim();
+    const cCod = String(body.codigoInterno || body.codigo || cId).trim();
+    const cDesc = !!body.tieneDerechoDescuento;
+    const cVen = String(body.vendedorId || 'PUBLICO').trim();
+    if (!cId || !cNom) return makeResp({ error: 'id y nombre son requeridos' }, 400);
+
+    if (!body.soloVendedor) {
+      const dup = store.clientes.find(c =>
+        !c.eliminado &&
+        String(c.id || c.id_cliente) !== cId &&
+        String(c.codigoInterno || c.codigo || '').trim().toLowerCase() === cCod.toLowerCase()
+      );
+      if (dup) {
+        return makeResp({
+          error: `El Código Interno "${cCod}" ya está registrado con el cliente "${dup.nombre}". No se permiten códigos internos duplicados.`
+        }, 409);
+      }
+    }
+    const idx = store.clientes.findIndex(c => String(c.id || c.id_cliente) === cId);
+    const cliObj = { id: cId, nombre: cNom, codigoInterno: cCod, tieneDerechoDescuento: cDesc, vendedorId: cVen, eliminado: false };
+    if (idx !== -1) store.clientes[idx] = { ...store.clientes[idx], ...cliObj };
+    else store.clientes.push(cliObj);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true }, 200);
+  }
+  if (cleanPath.startsWith('/api/clientes/') && m === 'DELETE') {
+    const id = decodeURIComponent(cleanPath.replace('/api/clientes/', '')).trim();
+    store.clientes = store.clientes.filter(c => String(c.id) !== id && String(c.codigoInterno) !== id);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true, deleted: id }, 200);
+  }
+
+  // 4. Operadores
+  if (cleanPath === '/api/operadores' && m === 'POST') {
+    const oId = String(body.id || '').trim();
+    const idx = store.operadores.findIndex(o => String(o.id) === oId);
+    const obj = { id: oId, nombre: String(body.nombre || '').trim(), puesto: String(body.puesto || '').trim(), eliminado: false };
+    if (idx !== -1) store.operadores[idx] = obj;
+    else store.operadores.push(obj);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true }, 200);
+  }
+  if (cleanPath.startsWith('/api/operadores/') && m === 'DELETE') {
+    const id = decodeURIComponent(cleanPath.replace('/api/operadores/', '')).trim();
+    store.operadores = store.operadores.filter(o => String(o.id) !== id);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true }, 200);
+  }
+
+  // 5. Vendedores
+  if (cleanPath === '/api/vendedores' && m === 'POST') {
+    const vId = String(body.id || '').trim();
+    const idx = store.vendedores.findIndex(v => String(v.id) === vId);
+    const obj = { id: vId, nombre: String(body.nombre || '').trim(), sucursalId: String(body.sucursalId || 'S01'), userId: body.userId || null, eliminado: false };
+    if (idx !== -1) store.vendedores[idx] = { ...store.vendedores[idx], ...obj };
+    else store.vendedores.push(obj);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true }, 200);
+  }
+  if (cleanPath.startsWith('/api/vendedores/') && m === 'DELETE') {
+    const id = decodeURIComponent(cleanPath.replace('/api/vendedores/', '')).trim();
+    store.vendedores = store.vendedores.filter(v => String(v.id) !== id);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true }, 200);
+  }
+
+  // 6. Proveedores
+  if (cleanPath === '/api/proveedores' && m === 'POST') {
+    const pId = String(body.id || '').trim();
+    const idx = store.proveedores.findIndex(p => String(p.id) === pId);
+    const obj = { ...body, id: pId, eliminado: false };
+    if (idx !== -1) store.proveedores[idx] = obj;
+    else store.proveedores.push(obj);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true }, 200);
+  }
+  if (cleanPath.startsWith('/api/proveedores/') && m === 'DELETE') {
+    const id = decodeURIComponent(cleanPath.replace('/api/proveedores/', '')).trim();
+    store.proveedores = store.proveedores.filter(p => String(p.id) !== id);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true }, 200);
+  }
+
+  // 7. Usuarios
+  if (cleanPath === '/api/usuarios' && m === 'POST') {
+    const uId = String(body.id_usuario || body.id || ('U' + Date.now().toString().slice(-6))).trim();
+    const usrObj = {
+      id: uId,
+      id_usuario: uId,
+      nombre: String(body.nombre || '').trim(),
+      email: String(body.email || '').trim(),
+      rol: String(body.rol || 'Vendedor').trim(),
+      nip: String(body.nip || '').trim(),
+      id_sucursal: String(body.id_sucursal || body.sucursalId || 'S01'),
+      sucursalId: String(body.sucursalId || body.id_sucursal || 'S01'),
+      adminTipo: body.adminTipo || 'Ambos',
+      bloqueado: !!body.bloqueado
+    };
+    const idx = store.usuarios.findIndex(u => String(u.id || u.id_usuario) === uId);
+    if (idx !== -1) store.usuarios[idx] = { ...store.usuarios[idx], ...usrObj };
+    else store.usuarios.push(usrObj);
+
+    if (usrObj.rol === 'Vendedor') {
+      const vIdx = store.vendedores.findIndex(v => String(v.userId) === uId || String(v.nombre).toLowerCase() === usrObj.nombre.toLowerCase());
+      if (vIdx !== -1) {
+        store.vendedores[vIdx] = { ...store.vendedores[vIdx], nombre: usrObj.nombre, sucursalId: usrObj.sucursalId, userId: uId, eliminado: false };
+      } else {
+        store.vendedores.push({ id: 'V' + uId, nombre: usrObj.nombre, sucursalId: usrObj.sucursalId, userId: uId, eliminado: false });
+      }
+    }
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true, id_usuario: uId }, 200);
+  }
+  if (cleanPath.startsWith('/api/usuarios/') && m === 'PUT') {
+    const uId = decodeURIComponent(cleanPath.replace('/api/usuarios/', '')).trim();
+    const idx = store.usuarios.findIndex(u => String(u.id || u.id_usuario) === uId);
+    if (idx !== -1) {
+      store.usuarios[idx] = {
+        ...store.usuarios[idx],
+        ...body,
+        id: uId,
+        id_usuario: uId,
+        sucursalId: String(body.sucursalId || body.id_sucursal || store.usuarios[idx].sucursalId || 'S01'),
+        id_sucursal: String(body.id_sucursal || body.sucursalId || store.usuarios[idx].id_sucursal || 'S01'),
+        bloqueado: body.bloqueado !== undefined ? !!body.bloqueado : !!store.usuarios[idx].bloqueado
+      };
+      await saveStoreToFirebase(store);
+    }
+    return makeResp({ success: true }, 200);
+  }
+  if (cleanPath.startsWith('/api/usuarios/') && m === 'DELETE') {
+    const uId = decodeURIComponent(cleanPath.replace('/api/usuarios/', '')).trim();
+    store.usuarios = store.usuarios.filter(u => String(u.id || u.id_usuario) !== uId);
+    store.vendedores = store.vendedores.filter(v => String(v.userId) !== uId);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true }, 200);
+  }
+
+  // 8. Sucursales
+  if (cleanPath === '/api/sucursales' && m === 'POST') {
+    const sId = String(body.id || body.id_sucursal || '').trim();
+    const idx = store.sucursales.findIndex(s => String(s.id || s.id_sucursal) === sId);
+    const obj = { id: sId, nombre: body.nombre, direccion: body.direccion, activaFinanciera: !!body.activaFinanciera };
+    if (idx !== -1) store.sucursales[idx] = obj;
+    else store.sucursales.push(obj);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true }, 200);
+  }
+  if (cleanPath.startsWith('/api/sucursales/') && m === 'DELETE') {
+    const sId = decodeURIComponent(cleanPath.replace('/api/sucursales/', '')).trim();
+    store.sucursales = store.sucursales.filter(s => String(s.id || s.id_sucursal) !== sId);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true }, 200);
+  }
+
+  // 9. Presupuestos
+  if (cleanPath === '/api/presupuestos' && m === 'POST') {
+    const pId = String(body.id || `${body.vendedorId}_${body.mes}`).trim();
+    const idx = store.presupuestos.findIndex(p => String(p.id) === pId || (String(p.vendedorId) === String(body.vendedorId) && String(p.mes) === String(body.mes)));
+    const obj = { ...body, id: pId };
+    if (idx !== -1) store.presupuestos[idx] = { ...store.presupuestos[idx], ...obj };
+    else store.presupuestos.push(obj);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true }, 200);
+  }
+  if (cleanPath.startsWith('/api/presupuestos/') && m === 'DELETE') {
+    const pId = decodeURIComponent(cleanPath.replace('/api/presupuestos/', '')).trim();
+    store.presupuestos = store.presupuestos.filter(p => String(p.id) !== pId);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true }, 200);
+  }
+
+  // 10. Faltantes Picking
+  if (cleanPath === '/api/faltantes-picking' && m === 'POST') {
+    const fId = String(body.id || ('PK' + Date.now())).trim();
+    const idx = store.faltantes.findIndex(f => String(f.id) === fId);
+    const obj = { ...body, id: fId };
+    if (idx !== -1) store.faltantes[idx] = obj;
+    else store.faltantes.unshift(obj);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true }, 200);
+  }
+  if (cleanPath.startsWith('/api/faltantes-picking/') && m === 'DELETE') {
+    const fId = decodeURIComponent(cleanPath.replace('/api/faltantes-picking/', '')).trim();
+    store.faltantes = store.faltantes.filter(f => String(f.id) !== fId);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true }, 200);
+  }
+
+  // 11. Reserva de folios para Lotes Impresos
+  if (cleanPath === '/api/folios/reservar' && m === 'POST') {
+    const cant = Math.max(1, Math.min(500, parseInt(body.cantidad, 10) || 1));
+    const desdeSugerido = parseInt(body.desdeFolio, 10) || 0;
+    const maxEnNotas = store.notas.reduce((mx, n) => Math.max(mx, parseInt(n.folio || String(n.id || '').replace(/\D/g, ''), 10) || 0), 0);
+    const base = Math.max(maxEnNotas, store.ultimoFolioReservado || 0);
+    const desde = desdeSugerido > base ? desdeSugerido : base + 1;
+    const hasta = desde + cant - 1;
+    store.ultimoFolioReservado = Math.max(base, hasta);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true, desde, hasta, ultimoFolioReservado: store.ultimoFolioReservado }, 200);
+  }
+
+  // 12. Crear o actualizar Nota de Crédito (POST /api/notas)
+  if (cleanPath === '/api/notas' && m === 'POST') {
+    const rawFolio = parseInt(body.folio || String(body.id || '').replace(/\D/g, ''), 10);
+    const maxEnNotas = store.notas.reduce((mx, n) => Math.max(mx, parseInt(n.folio || String(n.id || '').replace(/\D/g, ''), 10) || 0), 0);
+    const existingIdx = store.notas.findIndex(n =>
+      (body.uid && n.uid && n.uid === body.uid) ||
+      (rawFolio > 0 && parseInt(n.folio || String(n.id || '').replace(/\D/g, ''), 10) === rawFolio && !body.esNueva)
+    );
+    const folioNum = existingIdx !== -1
+      ? (parseInt(store.notas[existingIdx].folio, 10) || rawFolio)
+      : (rawFolio > 0 && !store.notas.some(n => parseInt(n.folio, 10) === rawFolio) ? rawFolio : Math.max(maxEnNotas, store.ultimoFolioReservado || 0) + 1);
+    const folStr = String(folioNum).padStart(4, '0');
+    const grupo = Math.floor((Math.max(1, folioNum) - 1) / 1000);
+    const serie = String.fromCharCode(65 + Math.max(0, grupo));
+    const notaId = 'N' + folStr;
+
+    const savedNota = {
+      ...(existingIdx !== -1 ? store.notas[existingIdx] : {}),
+      ...body,
+      id: notaId,
+      folio: folStr,
+      serie,
+      estado_operacion: body.estado_operacion || (body.estado === 'Cancelada' ? 'Cancelada' : 'Activa'),
+      estado_autorizacion: body.estado_autorizacion || (body.estado && body.estado !== 'Cancelada' ? body.estado : 'Autorizada')
+    };
+    delete savedNota.esNueva;
+
+    if (existingIdx !== -1) store.notas[existingIdx] = savedNota;
+    else store.notas.unshift(savedNota);
+    store.ultimoFolioReservado = Math.max(store.ultimoFolioReservado || 0, folioNum);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true, id: notaId, folio: folStr, serie, nota: savedNota }, 200);
+  }
+
+  // 13. Acción sobre una Nota (POST /api/notas/:id/accion)
+  if (cleanPath.startsWith('/api/notas/') && cleanPath.endsWith('/accion') && m === 'POST') {
+    const rawId = decodeURIComponent(cleanPath.replace('/api/notas/', '').replace('/accion', '')).trim();
+    const folNum = parseInt(rawId.replace(/\D/g, ''), 10);
+    const idx = store.notas.findIndex(n => String(n.id) === rawId || parseInt(n.folio, 10) === folNum);
+    if (idx === -1) return makeResp({ success: false, error: 'Nota no encontrada.' }, 404);
+
+    const nota = { ...store.notas[idx], firmas: { elaboro: null, almacen: null, contabilidad: null, autorizo: null, ...(store.notas[idx].firmas || {}) } };
+    const usr = store.usuarios.find(u => String(u.id || u.id_usuario) === String(body.userId)) || currentUser;
+    const accion = String(body.accion || '').toLowerCase();
+
+    if (accion === 'cancelar') {
+      nota.estado_operacion = 'Cancelada';
+      nota.estado = 'Cancelada';
+      nota.motivoCancelacion = body.motivo || 'Cancelada por usuario autorizado';
+      nota.canceladaPor = usr ? usr.nombre : 'Administrador';
+      nota.fechaCancelacion = new Date().toISOString();
+    } else if (accion === 'aprobar') {
+      nota.estado_autorizacion = 'Autorizada';
+      if (nota.estado_operacion !== 'Cancelada') nota.estado = 'Autorizada';
+      if (!nota.firmas.autorizo && usr) {
+        nota.firmas.autorizo = { usuario: usr.nombre, rol: usr.rol, fecha: new Date().toLocaleString('es-MX') };
+      }
+    } else if (accion === 'rechazar') {
+      nota.estado_autorizacion = 'Rechazada';
+      if (nota.estado_operacion !== 'Cancelada') nota.estado = 'Rechazada';
+      nota.motivoRechazo = body.motivo || '';
+    } else if (accion === 'firmar') {
+      const slot = body.tipoFirma || 'autorizo';
+      nota.firmas[slot] = {
+        usuario: usr ? usr.nombre : 'Usuario',
+        rol: usr ? usr.rol : '',
+        fecha: new Date().toLocaleString('es-MX')
+      };
+      const reqSlots = String(nota.tipo || '').toLowerCase().includes('finan')
+        ? ['elaboro', 'contabilidad', 'autorizo']
+        : ['elaboro', 'almacen', 'autorizo'];
+      if (reqSlots.every(s => !!nota.firmas[s])) {
+        nota.estado_autorizacion = 'Firmada';
+        if (nota.estado_operacion !== 'Cancelada') nota.estado = 'Firmada';
+      }
+    } else if (accion === 'imprimir') {
+      nota.impresa = true;
+      nota.fechaImpresion = new Date().toISOString();
+    }
+
+    store.notas[idx] = nota;
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true, nota }, 200);
+  }
+
+  // 14. DELETE /api/notas/:id
+  if (cleanPath.startsWith('/api/notas/') && m === 'DELETE') {
+    const rawId = decodeURIComponent(cleanPath.replace('/api/notas/', '')).trim();
+    const folNum = parseInt(rawId.replace(/\D/g, ''), 10);
+    store.notas = store.notas.filter(n => String(n.id) !== rawId && parseInt(n.folio, 10) !== folNum);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true }, 200);
+  }
+
+  return makeResp({ success: true }, 200);
+}
+
+// Interceptor global de fetch: usa SQL Server si la laptop está encendida y cae automáticamente a Google Cloud Firebase 24/7 si está apagada
+window.fetch = async function(input, init = {}) {
+  const urlStr = typeof input === 'string' ? input : (input && input.url ? input.url : String(input));
+  const apiIdx = urlStr.indexOf('/api/');
+  if (apiIdx === -1 || urlStr.includes('/api/catalogos/all') || urlStr.includes('firebaseio.com')) {
+    return _nativeFetch(input, init);
+  }
+
+  const apiPath = urlStr.substring(apiIdx);
+  const method = (init && init.method) ? init.method.toUpperCase() : 'GET';
+  const bodyText = init && init.body ? init.body : null;
+
+  // Intentar primero contra SQL Server (timeout rápido de 2.5s)
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 2500);
+    const res = await _nativeFetch(input, { ...init, signal: ctrl.signal });
+    clearTimeout(timer);
+    const ct = res.headers.get('content-type') || '';
+    if ((res.ok || (res.status >= 400 && res.status < 500)) && ct.includes('application/json')) {
+      window._lastBackendSource = 'sql';
+      // Si fue escritura exitosa en SQL Server, replicar también a Google Cloud Firebase en segundo plano
+      if (res.ok && method !== 'GET') {
+        handleFirebaseCloudAPI(apiPath, method, bodyText).catch(() => {});
+      }
+      return res;
+    }
+  } catch (e) {
+    // SQL Server apagado o fuera de red -> usar Google Cloud Firebase 24/7
+  }
+
+  window._lastBackendSource = 'firebase';
+  return handleFirebaseCloudAPI(apiPath, method, bodyText);
+};
+
+// Función principal: obtiene TODOS los datos desde SQL Server (si está prendido) o desde Google Cloud Firebase 24/7 (si la laptop está apagada)
 async function fetchFromSQLServer() {
   if (!SQL_TUNNEL_BASE) await resolveServerURL();
-  if (!SQL_TUNNEL_BASE) return null;
-  try {
-    const fetchCtrl = new AbortController();
-    const fetchTimer = setTimeout(() => fetchCtrl.abort(), 4000);
-    const res = await fetch(`${SQL_TUNNEL_BASE}/api/catalogos/all`, {
-      cache: 'no-store',
-      headers: { 'Accept': 'application/json' },
-      signal: fetchCtrl.signal
-    });
-    clearTimeout(fetchTimer);
-    if (!res.ok) {
-      if (!IS_SAME_ORIGIN) resolveServerURL();
-      return null;
+  if (SQL_TUNNEL_BASE) {
+    try {
+      const fetchCtrl = new AbortController();
+      const fetchTimer = setTimeout(() => fetchCtrl.abort(), 2200);
+      const res = await _nativeFetch(`${SQL_TUNNEL_BASE}/api/catalogos/all`, {
+        cache: 'no-store',
+        headers: { 'Accept': 'application/json' },
+        signal: fetchCtrl.signal
+      });
+      clearTimeout(fetchTimer);
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        window._lastBackendSource = 'sql';
+        return data;
+      }
+    } catch (e) {
+      // Laptop apagada o sin túnel -> caer de inmediato a Google Cloud Firebase 24/7
     }
-    const contentType = res.headers.get('content-type') || '';
-    if (!contentType.includes('application/json')) {
-      if (!IS_SAME_ORIGIN) resolveServerURL();
-      return null;
-    }
-    const data = await res.json();
-    return data;
-  } catch (e) {
-    console.warn('[SQL Tunnel] No accesible o timeout:', e.message);
-    if (!IS_SAME_ORIGIN) resolveServerURL();
-    return null;
   }
+
+  const fbStore = await fetchStoreFromFirebase();
+  if (fbStore) {
+    window._lastBackendSource = 'firebase';
+    return fbStore;
+  }
+  return null;
 }
 
 // --- COLA DE NOTAS PENDIENTES (garantiza que ninguna nota se pierda si el túnel falla) ---
@@ -349,7 +720,7 @@ if (typeof firebase !== 'undefined') {
   try {
     if (!firebase.apps.length) {
       firebase.initializeApp({
-        databaseURL: "https://casaayala-sync-2026-default-rtdb.firebaseio.com"
+        databaseURL: FIREBASE_RTDB_URL
       });
     }
     googleCloudDb = firebase.database();
@@ -712,7 +1083,11 @@ async function fetchAPIData() {
       }
     }
 
-    updateSyncStatusUI('🟢 SQL Server Conectado', true);
+    if (window._lastBackendSource === 'firebase') {
+      updateSyncStatusUI('🟢 Google Cloud 24/7 Conectado', true);
+    } else {
+      updateSyncStatusUI('🟢 SQL Server + Google Cloud Activo', true);
+    }
     // Guardar copia local persistente de respaldo para cuando no haya red
     saveData('ca_master_cache', {
       usuarios, sucursales, clientes, operadores, vendedores, proveedores, presupuestos, notas, faltantesPicking,

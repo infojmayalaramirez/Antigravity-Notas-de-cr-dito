@@ -32,12 +32,18 @@ async function getPool() {
 app.use(cors());
 app.use(express.json({ limit: '25mb' }));
 
-// Cache-Control: no-cache en TODOS los GET — el navegador siempre pide datos frescos de SQL Server
+// Cache-Control: no-cache en TODOS los GET + replicación automática a Google Cloud Firebase en escrituras
 app.use((req, res, next) => {
     if (req.method === 'GET') {
         res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');
+    } else if (req.path.startsWith('/api/') && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+        res.on('finish', () => {
+            if (res.statusCode >= 200 && res.statusCode < 300 && typeof schedulePushSQLToFirebase === 'function') {
+                schedulePushSQLToFirebase(300);
+            }
+        });
     }
     next();
 });
@@ -1411,6 +1417,175 @@ app.post('/api/migrar-localstorage', async (req, res) => {
 });
 
 // =====================================================================
+// SINCRONIZACIÓN BIDIRECCIONAL AUTOMÁTICA: SQL SERVER <-> GOOGLE CLOUD FIREBASE 24/7
+// =====================================================================
+const http = require('http');
+const FIREBASE_STORE_URL = 'https://casa-ayala-905ab-default-rtdb.firebaseio.com/store.json';
+let _fbPushTimer = null;
+let _isSyncingFirebase = false;
+
+function httpGetJson(urlStr, useIpv4 = true) {
+    return new Promise((resolve) => {
+        const mod = urlStr.startsWith('https') ? https : http;
+        const opts = useIpv4 ? { family: 4, timeout: 8000 } : { timeout: 8000 };
+        const req = mod.get(urlStr, opts, (res) => {
+            let raw = '';
+            res.setEncoding('utf8');
+            res.on('data', (c) => { raw += c; });
+            res.on('end', () => {
+                if (res.statusCode >= 200 && res.statusCode < 300) {
+                    try { resolve(JSON.parse(raw)); } catch (e) { resolve(null); }
+                } else {
+                    resolve(null);
+                }
+            });
+        });
+        req.on('timeout', () => { req.destroy(); resolve(null); });
+        req.on('error', () => resolve(null));
+    });
+}
+
+function httpsPutFirebase(dataObj) {
+    return new Promise((resolve) => {
+        const bodyStr = JSON.stringify({ ...dataObj, updatedAt: new Date().toISOString() });
+        const bodyBuf = Buffer.from(bodyStr, 'utf8');
+        const req = https.request(FIREBASE_STORE_URL, {
+            method: 'PUT',
+            family: 4,
+            timeout: 10000,
+            headers: {
+                'Content-Type': 'application/json; charset=utf-8',
+                'Content-Length': bodyBuf.length
+            }
+        }, (res) => {
+            res.resume();
+            resolve(res.statusCode >= 200 && res.statusCode < 300);
+        });
+        req.on('timeout', () => { req.destroy(); resolve(false); });
+        req.on('error', () => resolve(false));
+        req.write(bodyBuf);
+        req.end();
+    });
+}
+
+async function pushSQLToFirebase() {
+    if (_isSyncingFirebase) return;
+    _isSyncingFirebase = true;
+    try {
+        const localData = await httpGetJson(`http://127.0.0.1:${PORT}/api/catalogos/all`, false);
+        if (localData && typeof localData === 'object') {
+            await httpsPutFirebase(localData);
+        }
+    } catch (e) {
+        console.warn('[Firebase Sync] Error subiendo a Google Cloud:', e.message);
+    } finally {
+        _isSyncingFirebase = false;
+    }
+}
+
+function schedulePushSQLToFirebase(delayMs = 400) {
+    if (_fbPushTimer) clearTimeout(_fbPushTimer);
+    _fbPushTimer = setTimeout(() => {
+        pushSQLToFirebase();
+    }, delayMs);
+}
+
+// Middleware: cada cambio en SQL Server se replica automáticamente a Google Cloud Firebase
+app.use((req, res, next) => {
+    if (req.path.startsWith('/api/') && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+        res.on('finish', () => {
+            if (res.statusCode >= 200 && res.statusCode < 300) {
+                schedulePushSQLToFirebase(300);
+            }
+        });
+    }
+    next();
+});
+
+// Descarga cambios hechos en Google Cloud Firebase mientras la laptop estuvo apagada y los guarda en SQL Server
+async function pullFromFirebaseToSQL() {
+    if (_isSyncingFirebase) return;
+    _isSyncingFirebase = true;
+    try {
+        const fb = await httpGetJson(FIREBASE_STORE_URL, true);
+        if (!fb || typeof fb !== 'object') return;
+        const pool = await getPool();
+        const toArr = (v) => Array.isArray(v) ? v.filter(Boolean) : (v && typeof v === 'object' ? Object.values(v).filter(Boolean) : []);
+
+        // 1. Folio reservado
+        const fbFolio = parseInt(fb.ultimoFolioReservado, 10) || 0;
+        if (fbFolio > 0) {
+            await pool.request()
+                .input('f', sql.Int, fbFolio)
+                .query('UPDATE dbo.FolioControl SET ultimo_folio = CASE WHEN @f > ultimo_folio THEN @f ELSE ultimo_folio END WHERE id=1');
+        }
+
+        // 2. Clientes (incluyendo vendedorId asignado en la nube)
+        for (const c of toArr(fb.clientes)) {
+            if (!c.id || c.eliminado) continue;
+            await pool.request()
+                .input('id', sql.VarChar, String(c.id).slice(0, 50))
+                .input('nom', sql.VarChar, String(c.nombre || '').slice(0, 255))
+                .input('cod', sql.VarChar, String(c.codigoInterno || c.codigo || c.id).slice(0, 50))
+                .input('desc', sql.Bit, c.tieneDerechoDescuento ? 1 : 0)
+                .input('ven', sql.VarChar, String(c.vendedorId || 'PUBLICO').slice(0, 50))
+                .query(`
+                    IF NOT EXISTS (SELECT 1 FROM dbo.Clientes WHERE id_cliente=@id)
+                        INSERT INTO dbo.Clientes (id_cliente,nombre,codigo_interno,tiene_derecho_descuento,id_vendedor,eliminado)
+                        VALUES (@id,@nom,@cod,@desc,@ven,0)
+                    ELSE
+                        UPDATE dbo.Clientes
+                        SET nombre=@nom, codigo_interno=@cod, tiene_derecho_descuento=@desc,
+                            id_vendedor=CASE WHEN @ven<>'PUBLICO' THEN @ven ELSE ISNULL(id_vendedor,'PUBLICO') END
+                        WHERE id_cliente=@id
+                `).catch(() => {});
+        }
+
+        // 3. Notas de crédito creadas o firmadas/canceladas en la nube mientras la laptop estuvo apagada
+        for (const n of toArr(fb.notas)) {
+            const folNum = parseInt(n.folio || String(n.id || '').replace(/\D/g, ''), 10);
+            if (!folNum || folNum <= 0) continue;
+            const jsonStr = JSON.stringify(n);
+            const estAut = String(n.estado_autorizacion || n.estado || 'Autorizada').slice(0, 50);
+            const estOp = String(n.estado_operacion || (n.estado === 'Cancelada' ? 'Cancelada' : 'Activa')).slice(0, 50);
+            const tipoNota = String(n.tipo_nota || (String(n.tipo || '').toLowerCase().includes('finan') ? 'Financiera' : 'Física')).slice(0, 50);
+            const idSuc = String(n.sucursalId || n.id_sucursal || 'S01').slice(0, 10);
+            const idVen = String(n.vendedorId || n.id_vendedor || 'U01').slice(0, 50);
+            const idCli = String(n.clienteId || n.id_cliente || '').slice(0, 50);
+            const idOpe = String(n.operadorId || n.id_operador || '').slice(0, 50);
+            const monto = parseFloat(n.total || n.monto_total || 0) || 0;
+
+            await pool.request()
+                .input('id', sql.Int, folNum)
+                .input('tipo', sql.VarChar, tipoNota)
+                .input('suc', sql.VarChar, idSuc)
+                .input('ven', sql.VarChar, idVen)
+                .input('cli', sql.VarChar, idCli)
+                .input('ope', sql.VarChar, idOpe)
+                .input('monto', sql.Decimal(18, 2), monto)
+                .input('aut', sql.VarChar, estAut)
+                .input('op', sql.VarChar, estOp)
+                .input('json', sql.VarChar(sql.MAX), jsonStr)
+                .query(`
+                    IF NOT EXISTS (SELECT 1 FROM dbo.Notas WHERE id_nota=@id)
+                        INSERT INTO dbo.Notas (id_nota,tipo_nota,id_sucursal,id_usuario_creador,id_cliente,id_operador,monto_total,estado,estado_autorizacion,estado_operacion,datos_json)
+                        VALUES (@id,@tipo,@suc,@ven,@cli,@ope,@monto,@aut,@aut,@op,@json)
+                    ELSE
+                        UPDATE dbo.Notas
+                        SET estado_operacion = CASE WHEN @op='Cancelada' THEN 'Cancelada' ELSE estado_operacion END,
+                            estado_autorizacion = CASE WHEN @aut IN ('Firmada','Rechazada') THEN @aut ELSE estado_autorizacion END,
+                            datos_json = CASE WHEN @op='Cancelada' OR @aut IN ('Firmada','Rechazada') THEN @json ELSE datos_json END
+                        WHERE id_nota=@id
+                `).catch(() => {});
+        }
+    } catch (e) {
+        console.warn('[Firebase Pull] Aviso:', e.message);
+    } finally {
+        _isSyncingFirebase = false;
+    }
+}
+
+// =====================================================================
 // ARCHIVOS ESTÁTICOS Y ARRANQUE
 // =====================================================================
 app.use(express.static(path.join(__dirname)));
@@ -1428,4 +1603,8 @@ app.listen(PORT, '0.0.0.0', async () => {
     }
     console.log('\n[SQL Server] Verificando esquema...');
     await ensureDatabaseSchema();
+    await pullFromFirebaseToSQL();
+    await pushSQLToFirebase();
+    console.log('[Google Cloud] ☁️ Sincronización 24/7 activa con Firebase Realtime Database.');
+    setInterval(pullFromFirebaseToSQL, 20000);
 });
