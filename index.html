@@ -16,7 +16,7 @@
   <!-- FontAwesome Icons -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <!-- Hoja de estilos del sistema -->
-  <link rel="stylesheet" href="styles.css?v=30">
+  <link rel="stylesheet" href="styles.css?v=42">
   <!-- Chart.js CDN para Gráficas de Inteligencia de Negocio -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <!-- Google Firebase SDK para Nube de Google -->
@@ -584,17 +584,30 @@
                   </div>
                 </div>
 
-                <!-- Carga de Foto de la Incidencia -->
+                <!-- Carga de Fotos de la Incidencia / Facturas (Múltiples Imágenes) -->
                 <div class="form-group full-width" style="margin-bottom: 24px;">
-                  <label>Foto de Incidencia (Ejem: Mal estado, Olvidado en almacén, etc.)</label>
+                  <label style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
+                    <span>Fotos de Incidencia / Facturas (Puedes subir una o varias imágenes)</span>
+                    <span id="nf-fotos-count-badge" class="badge badge-info hidden" style="font-size: 11px;">0 imágenes</span>
+                  </label>
                   <div class="image-upload-wrapper" id="nf-upload-wrapper">
-                    <i class="fa-solid fa-camera fa-2x" style="color: var(--text-muted); margin-bottom: 8px;"></i>
-                    <p style="font-weight: 600;">Haz clic o arrastra una imagen aquí</p>
-                    <p class="logo-sub">Máximo 1MB</p>
-                    <input type="file" id="nf-foto-input" accept="image/*" style="display: none;">
+                    <div id="nf-upload-prompt" class="nf-upload-prompt">
+                      <i class="fa-solid fa-images fa-2x" style="color: var(--text-muted); margin-bottom: 8px;"></i>
+                      <p style="font-weight: 600; margin-bottom: 2px;">Haz clic o arrastra una o varias imágenes aquí</p>
+                      <p class="logo-sub">Soporta múltiples fotos de facturas o mercancía (se ajustan automáticamente al formato)</p>
+                    </div>
+                    <input type="file" id="nf-foto-input" accept="image/*" multiple style="display: none;">
                     <div id="nf-preview-container" class="image-preview-container hidden">
-                      <img id="nf-foto-preview" class="image-preview" src="">
-                      <button type="button" class="remove-image-btn" id="btn-nf-remove-img">&times;</button>
+                      <div id="nf-preview-grid" class="nf-multi-preview-grid"></div>
+                      <img id="nf-foto-preview" class="image-preview hidden" src="" style="display: none;">
+                      <div class="nf-preview-actions">
+                        <button type="button" class="btn btn-secondary btn-sm" id="btn-nf-add-more-imgs">
+                          <i class="fa-solid fa-plus"></i> Agregar más imágenes
+                        </button>
+                        <button type="button" class="btn btn-danger btn-sm" id="btn-nf-remove-img" title="Quitar todas las imágenes">
+                          <i class="fa-solid fa-trash-can"></i> Quitar todas
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -735,14 +748,11 @@
               </div>
             </div>
 
-            <!-- Foto de la Incidencia -->
+            <!-- Fotos de la Incidencia / Facturas -->
             <div id="det-container-foto" class="hidden" style="margin: 20px 0;">
-              <h3>Evidencia Fotográfica de Incidencia</h3>
-              <div style="margin-top:10px;">
-                <img id="det-foto" src=""
-                  style="max-width: 400px; border-radius: var(--radius-sm); border:1px solid var(--border-color);"
-                  alt="Incidencia">
-              </div>
+              <h3 id="det-fotos-title">Evidencia Fotográfica de Incidencia / Facturas</h3>
+              <div id="det-fotos-grid" class="det-fotos-grid" style="margin-top: 10px;"></div>
+              <img id="det-foto" src="" class="hidden" style="display: none;" alt="Incidencia">
             </div>
 
 
@@ -2231,8 +2241,8 @@
   </div>
 
   <!-- Scripts -->
-  <script src="mockData.js?v=41"></script>
-  <script src="app.js?v=41"></script>
+  <script src="mockData.js?v=42"></script>
+  <script src="app.js?v=42"></script>
 
   <!-- Inicialización de Gráficas de Inteligencia de Negocio (Chart.js) -->
   <script>

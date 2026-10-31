@@ -593,12 +593,24 @@ function getPendingNotas() {
   try { return JSON.parse(localStorage.getItem(PENDING_NOTAS_KEY)) || []; } catch (e) { return []; }
 }
 function setPendingNotas(arr) {
-  localStorage.setItem(PENDING_NOTAS_KEY, JSON.stringify(arr || []));
+  try {
+    localStorage.setItem(PENDING_NOTAS_KEY, JSON.stringify(arr || []));
+  } catch (e) {
+    // Si localStorage se llena por múltiples fotos, guardar versión ligera en cola local
+    try {
+      const slim = (arr || []).map(x => {
+        const c = { ...x };
+        delete c.incidenciaFoto;
+        delete c.incidenciaFotos;
+        return c;
+      });
+      localStorage.setItem(PENDING_NOTAS_KEY, JSON.stringify(slim));
+    } catch (e2) {}
+  }
 }
 function queuePendingNota(nota) {
   const arr = getPendingNotas().filter(n => String(n.id) !== String(nota.id));
   const copy = { ...nota };
-  delete copy.incidenciaFoto; // no saturar localStorage con imágenes
   arr.push(copy);
   setPendingNotas(arr);
 }
@@ -607,9 +619,8 @@ async function sendNotaToServer(nota) {
   if (!SQL_TUNNEL_BASE) await resolveServerURL();
   if (!SQL_TUNNEL_BASE) throw new Error('Servidor no disponible');
   const payload = { ...nota };
-  delete payload.incidenciaFoto; // el servidor no la almacena; evita payloads enormes
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 10000);
+  const timer = setTimeout(() => ctrl.abort(), 15000);
   const res = await fetch(`${SQL_TUNNEL_BASE}/api/notas`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1000,6 +1011,7 @@ async function fetchAPIData() {
       localStorage.setItem('ca_ultimo_folio', String(sqlData.ultimoFolioReservado));
     }
     if (Array.isArray(sqlData.notas)) {
+      const prevNotasMap = new Map((notas || []).map(prev => [String(prev.id), prev]));
       notas = sqlData.notas.map(n => {
         let parsedJson = {};
         if (n.datos_json) {
@@ -1010,8 +1022,17 @@ async function fetchAPIData() {
         const isFin = rawTipo.includes('finan');
         const folStr = String(fullNota.folio || fullNota.folio_consecutivo || fullNota.id_nota || String(fullNota.id || '').replace(/\D/g, '')).padStart(4, '0');
         const numId = 'N' + folStr;
+        const prevLocal = prevNotasMap.get(numId);
         const estOp = fullNota.estado_operacion || (fullNota.estado === 'Cancelada' ? 'Cancelada' : 'Activa');
         const estAut = fullNota.estado_autorizacion || (fullNota.estado && fullNota.estado !== 'Cancelada' ? fullNota.estado : 'Autorizada');
+        const incidenciaFotos = (Array.isArray(fullNota.incidenciaFotos) && fullNota.incidenciaFotos.length > 0)
+          ? fullNota.incidenciaFotos
+          : (fullNota.incidenciaFoto
+              ? [fullNota.incidenciaFoto]
+              : (prevLocal && Array.isArray(prevLocal.incidenciaFotos) && prevLocal.incidenciaFotos.length > 0
+                  ? prevLocal.incidenciaFotos
+                  : (prevLocal && prevLocal.incidenciaFoto ? [prevLocal.incidenciaFoto] : [])));
+        const incidenciaFoto = incidenciaFotos[0] || null;
 
         return {
           ...fullNota,
@@ -1031,6 +1052,8 @@ async function fetchAPIData() {
           total: parseFloat(fullNota.total || fullNota.monto_total || fullNota.montoTotal || fullNota.importeDescuento || 0) || 0,
           subtotal: parseFloat(fullNota.subtotal || fullNota.total || 0) || 0,
           importeDescuento: parseFloat(fullNota.importeDescuento || (isFin ? fullNota.total : 0) || 0) || 0,
+          incidenciaFotos,
+          incidenciaFoto,
           estado_operacion: estOp,
           estado_autorizacion: estAut,
           estado: estOp === 'Cancelada' ? 'Cancelada' : estAut,
@@ -2860,37 +2883,145 @@ function setupPhysicalNoteForm() {
     }
   });
 
-  // Carga de imagen (click y arrastre / drag & drop)
+  // Carga de múltiples imágenes (click y arrastre / drag & drop) con compresión inteligente y auto-ajuste
   const uploadWrapper = document.getElementById('nf-upload-wrapper');
   const fotoInput = document.getElementById('nf-foto-input');
 
-  function handleImageFile(file) {
-    if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      alert('Por favor selecciona un archivo de imagen válido (JPG, PNG, WebP).');
+  function compressImageFileToDataURL(file, maxDim = 950, quality = 0.72) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('No se pudo leer la imagen'));
+      reader.onload = function(evt) {
+        const img = new Image();
+        img.onerror = () => resolve(evt.target.result);
+        img.onload = function() {
+          let w = img.width || 800;
+          let h = img.height || 600;
+          if (w > maxDim || h > maxDim) {
+            if (w >= h) {
+              h = Math.round((h * maxDim) / w);
+              w = maxDim;
+            } else {
+              w = Math.round((w * maxDim) / h);
+              h = maxDim;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+          try {
+            resolve(canvas.toDataURL('image/jpeg', quality));
+          } catch (e) {
+            resolve(evt.target.result);
+          }
+        };
+        img.src = evt.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  window.renderPhysicalNoteFotosPreview = function() {
+    const previewContainer = document.getElementById('nf-preview-container');
+    const previewGrid = document.getElementById('nf-preview-grid');
+    const uploadPrompt = document.getElementById('nf-upload-prompt');
+    const countBadge = document.getElementById('nf-fotos-count-badge');
+    const legacyImg = document.getElementById('nf-foto-preview');
+
+    if (!Array.isArray(window.currentFisicaFotos)) window.currentFisicaFotos = [];
+    const total = window.currentFisicaFotos.length;
+
+    if (legacyImg) {
+      legacyImg.src = total > 0 ? window.currentFisicaFotos[0] : '';
+    }
+
+    if (total === 0) {
+      if (previewContainer) previewContainer.classList.add('hidden');
+      if (uploadPrompt) uploadPrompt.classList.remove('hidden');
+      if (countBadge) {
+        countBadge.classList.add('hidden');
+        countBadge.textContent = '0 imágenes';
+      }
+      if (previewGrid) previewGrid.innerHTML = '';
       return;
     }
-    if (file.size > 1024 * 1024) {
-      alert('La imagen supera el límite de 1MB. Por favor selecciona una más pequeña.');
-      return;
+
+    if (previewContainer) previewContainer.classList.remove('hidden');
+    if (uploadPrompt) uploadPrompt.classList.add('hidden');
+    if (countBadge) {
+      countBadge.classList.remove('hidden');
+      countBadge.textContent = `${total} ${total === 1 ? 'imagen adjunta' : 'imágenes adjuntas'}`;
     }
-    const reader = new FileReader();
-    reader.onload = function(evt) {
-      document.getElementById('nf-foto-preview').src = evt.target.result;
-      document.getElementById('nf-preview-container').classList.remove('hidden');
-    };
-    reader.readAsDataURL(file);
+
+    if (previewGrid) {
+      // Ajustar columnas y altura automáticamente al espacio otorgado según el número de imágenes
+      const cols = total === 1 ? '1fr' : (total === 2 ? 'repeat(2, 1fr)' : (total <= 4 ? 'repeat(auto-fit, minmax(150px, 1fr))' : 'repeat(auto-fit, minmax(125px, 1fr))'));
+      const cardHeight = total === 1 ? '175px' : (total <= 4 ? '140px' : '120px');
+      const imgHeight = total === 1 ? '135px' : (total <= 4 ? '102px' : '82px');
+      previewGrid.style.gridTemplateColumns = cols;
+
+      previewGrid.innerHTML = window.currentFisicaFotos.map((dataUrl, idx) => `
+        <div class="nf-preview-card" style="height: ${cardHeight};">
+          <button type="button" class="remove-image-btn" onclick="event.stopPropagation(); window.removePhysicalNoteFoto(${idx});" title="Quitar imagen ${idx + 1}">&times;</button>
+          <img src="${dataUrl}" alt="Evidencia ${idx + 1}" style="height: ${imgHeight};" />
+          <div class="nf-preview-card-label">Imagen / Factura ${idx + 1} de ${total}</div>
+        </div>
+      `).join('');
+    }
+  };
+
+  window.removePhysicalNoteFoto = function(idx) {
+    if (!Array.isArray(window.currentFisicaFotos)) return;
+    window.currentFisicaFotos.splice(idx, 1);
+    window.renderPhysicalNoteFotosPreview();
+  };
+
+  async function handleImageFiles(fileList) {
+    if (!fileList || fileList.length === 0) return;
+    if (!Array.isArray(window.currentFisicaFotos)) window.currentFisicaFotos = [];
+    const files = Array.from(fileList);
+    for (const file of files) {
+      if (!file.type || !file.type.startsWith('image/')) {
+        alert(`El archivo "${file.name}" no es una imagen válida (usa JPG, PNG o WebP).`);
+        continue;
+      }
+      if (window.currentFisicaFotos.length >= 12) {
+        alert('Se permite un máximo de 12 imágenes por nota de crédito física.');
+        break;
+      }
+      try {
+        const compressedDataUrl = await compressImageFileToDataURL(file, 950, 0.72);
+        window.currentFisicaFotos.push(compressedDataUrl);
+      } catch (e) {
+        console.warn('Error procesando imagen:', e);
+      }
+    }
+    fotoInput.value = '';
+    window.renderPhysicalNoteFotosPreview();
   }
   
   uploadWrapper.addEventListener('click', (e) => {
-    if (e.target.id !== 'btn-nf-remove-img') {
-      fotoInput.click();
+    if (e.target.closest('#btn-nf-remove-img') || e.target.closest('.remove-image-btn')) {
+      return;
     }
+    fotoInput.click();
   });
 
+  const btnAddMoreImgs = document.getElementById('btn-nf-add-more-imgs');
+  if (btnAddMoreImgs) {
+    btnAddMoreImgs.addEventListener('click', (e) => {
+      e.stopPropagation();
+      fotoInput.click();
+    });
+  }
+
   fotoInput.addEventListener('change', (e) => {
-    if (e.target.files && e.target.files[0]) {
-      handleImageFile(e.target.files[0]);
+    if (e.target.files && e.target.files.length > 0) {
+      handleImageFiles(e.target.files);
     }
   });
 
@@ -2915,16 +3046,16 @@ function setupPhysicalNoteForm() {
 
   uploadWrapper.addEventListener('drop', (e) => {
     const dt = e.dataTransfer;
-    if (dt && dt.files && dt.files[0]) {
-      handleImageFile(dt.files[0]);
+    if (dt && dt.files && dt.files.length > 0) {
+      handleImageFiles(dt.files);
     }
   }, false);
 
   document.getElementById('btn-nf-remove-img').addEventListener('click', (e) => {
     e.stopPropagation();
     fotoInput.value = '';
-    document.getElementById('nf-foto-preview').src = '';
-    document.getElementById('nf-preview-container').classList.add('hidden');
+    window.currentFisicaFotos = [];
+    window.renderPhysicalNoteFotosPreview();
   });
 
   document.getElementById('btn-nf-add-row').addEventListener('click', () => {
@@ -2974,8 +3105,13 @@ function resetPhysicalForm() {
   }
 
   document.getElementById('nf-foto-input').value = '';
-  document.getElementById('nf-foto-preview').src = '';
-  document.getElementById('nf-preview-container').classList.add('hidden');
+  window.currentFisicaFotos = [];
+  if (typeof window.renderPhysicalNoteFotosPreview === 'function') {
+    window.renderPhysicalNoteFotosPreview();
+  } else {
+    document.getElementById('nf-foto-preview').src = '';
+    document.getElementById('nf-preview-container').classList.add('hidden');
+  }
 
   // Calcular siguiente Folio y Serie
   const nextFolio = getNextFolioNumber();
@@ -3258,8 +3394,13 @@ async function submitPhysicalNote(isDraft) {
     return;
   }
   const causaMarcar = causaRad ? causaRad.value : '';
-  const imgPreview = document.getElementById('nf-foto-preview');
-  const incidenciaFoto = imgPreview.src && imgPreview.src.startsWith('data:') ? imgPreview.src : null;
+  const incidenciaFotos = Array.isArray(window.currentFisicaFotos) && window.currentFisicaFotos.length > 0
+    ? [...window.currentFisicaFotos]
+    : (() => {
+        const imgPreview = document.getElementById('nf-foto-preview');
+        return (imgPreview && imgPreview.src && imgPreview.src.startsWith('data:')) ? [imgPreview.src] : [];
+      })();
+  const incidenciaFoto = incidenciaFotos[0] || null;
 
   const subtotalVal = parseFloat(document.getElementById('nf-subtotal-val').textContent) || 0;
   const ivaVal = parseFloat(document.getElementById('nf-iva-val').textContent) || 0;
@@ -3299,6 +3440,7 @@ async function submitPhysicalNote(isDraft) {
     ieps: iepsVal,
     total: totalGeneralVal,
     incidenciaFoto,
+    incidenciaFotos,
     firmas: {
       elaboro: currentUser.id,
       almacen: null,
@@ -3918,9 +4060,33 @@ window.viewNotaDetail = function(notaId, keepView = false) {
     const ope = operadores.find(o => o.id === nota.operadorId);
     document.getElementById('det-chofer').textContent = ope ? `${ope.nombre} (${ope.puesto})` : (nota.operadorNombre || 'N/A');
 
-    if (nota.incidenciaFoto) {
+    const fotosList = (Array.isArray(nota.incidenciaFotos) && nota.incidenciaFotos.length > 0)
+      ? nota.incidenciaFotos
+      : (nota.incidenciaFoto ? [nota.incidenciaFoto] : []);
+
+    if (fotosList.length > 0) {
       containerFoto.classList.remove('hidden');
-      document.getElementById('det-foto').src = nota.incidenciaFoto;
+      const detFotoLegacy = document.getElementById('det-foto');
+      if (detFotoLegacy) detFotoLegacy.src = fotosList[0];
+      const detTitle = document.getElementById('det-fotos-title');
+      if (detTitle) {
+        detTitle.textContent = `Evidencia Fotográfica de Incidencia / Facturas (${fotosList.length} ${fotosList.length === 1 ? 'imagen' : 'imágenes'})`;
+      }
+      const detGrid = document.getElementById('det-fotos-grid');
+      if (detGrid) {
+        const cols = fotosList.length === 1
+          ? 'minmax(200px, 420px)'
+          : (fotosList.length === 2 ? 'repeat(2, minmax(180px, 1fr))' : 'repeat(auto-fit, minmax(175px, 1fr))');
+        detGrid.style.gridTemplateColumns = cols;
+        detGrid.innerHTML = fotosList.map((src, idx) => `
+          <div class="det-foto-card">
+            <img src="${src}" alt="Evidencia ${idx + 1}" onclick="window.open('${src}', '_blank')" title="Clic para abrir imagen ${idx + 1}" />
+            <div style="font-size: 11px; font-weight: 700; color: #475569; margin-top: 6px;">
+              Evidencia / Factura #${idx + 1}
+            </div>
+          </div>
+        `).join('');
+      }
     } else {
       containerFoto.classList.add('hidden');
     }
@@ -6599,8 +6765,12 @@ function printNotaFormat(notaId) {
   const printArea = document.getElementById('print-area');
   printArea.innerHTML = '';
 
-  // Hoja de Resumen de Incidencias con Fotografía (Página 1 de respaldo si la Nota Física contiene foto)
-  if (nota.tipo === 'Fisico' && nota.incidenciaFoto) {
+  const fotosList = (Array.isArray(nota.incidenciaFotos) && nota.incidenciaFotos.length > 0)
+    ? nota.incidenciaFotos
+    : (nota.incidenciaFoto ? [nota.incidenciaFoto] : []);
+
+  // Hoja de Resumen de Incidencias con Fotografías (Página 1 de respaldo si la Nota Física contiene 1 o más fotos)
+  if (nota.tipo === 'Fisico' && fotosList.length > 0) {
     const summarySheet = document.createElement('div');
     summarySheet.className = 'print-summary-sheet';
     summarySheet.innerHTML = getPhysicalNoteSummaryPrintHtml(nota);
@@ -6623,8 +6793,17 @@ function printNotaFormat(notaId) {
 function getPhysicalNoteSummaryPrintHtml(nota) {
   const suc = sucursales.find(s => s.id === nota.sucursalId);
   const cli = clientes.find(c => c.id === nota.clienteId);
-  const ven = vendedores.find(v => v.id === nota.vendedorId);
+  const ven = getNoteEffectiveVendorObj(nota) || vendedores.find(v => v.id === nota.vendedorId);
   const ope = operadores.find(o => o.id === nota.operadorId);
+
+  const fotosList = (Array.isArray(nota.incidenciaFotos) && nota.incidenciaFotos.length > 0)
+    ? nota.incidenciaFotos
+    : (nota.incidenciaFoto ? [nota.incidenciaFoto] : []);
+  const nFotos = fotosList.length;
+  const nProds = (nota.productos && nota.productos.length) || 1;
+  const isCompact = nFotos > 2 || nProds > 4;
+  const cellPad = isCompact ? '2px 5px' : '4px 6px';
+  const tableFontSize = isCompact ? '8.5px' : '9.5px';
 
   let subtotalCalc = 0;
   let ivaCalc = 0;
@@ -6646,19 +6825,19 @@ function getPhysicalNoteSummaryPrintHtml(nota) {
 
       productRowsHtml += `
         <tr>
-          <td style="padding: 4px 6px; text-align: center; border: 1px solid #94a3b8;">${p.codigo || '-'}</td>
-          <td style="padding: 4px 6px; text-align: center; border: 1px solid #94a3b8;">${p.cantidad || 0}</td>
-          <td style="padding: 4px 6px; text-align: center; border: 1px solid #94a3b8;">${p.pv || '1'}</td>
-          <td style="padding: 4px 6px; text-align: center; border: 1px solid #94a3b8;">${p.bodega || (suc ? suc.nombre : '-')}</td>
-          <td style="padding: 4px 6px; border: 1px solid #94a3b8;">${p.descripcion || '-'}</td>
-          <td style="padding: 4px 6px; text-align: center; border: 1px solid #94a3b8;">${p.causa || '-'}</td>
-          <td style="padding: 4px 6px; text-align: right; border: 1px solid #94a3b8;">${formatCurrency(p.unitario)}</td>
-          <td style="padding: 4px 6px; text-align: right; font-weight: bold; border: 1px solid #94a3b8;">${formatCurrency(rowImporte)}</td>
+          <td style="padding: ${cellPad}; text-align: center; border: 1px solid #94a3b8;">${p.codigo || '-'}</td>
+          <td style="padding: ${cellPad}; text-align: center; border: 1px solid #94a3b8;">${p.cantidad || 0}</td>
+          <td style="padding: ${cellPad}; text-align: center; border: 1px solid #94a3b8;">${p.pv || '1'}</td>
+          <td style="padding: ${cellPad}; text-align: center; border: 1px solid #94a3b8;">${p.bodega || (suc ? suc.nombre : '-')}</td>
+          <td style="padding: ${cellPad}; border: 1px solid #94a3b8;">${p.descripcion || '-'}</td>
+          <td style="padding: ${cellPad}; text-align: center; border: 1px solid #94a3b8;">${p.causa || '-'}</td>
+          <td style="padding: ${cellPad}; text-align: right; border: 1px solid #94a3b8;">${formatCurrency(p.unitario)}</td>
+          <td style="padding: ${cellPad}; text-align: right; font-weight: bold; border: 1px solid #94a3b8;">${formatCurrency(rowImporte)}</td>
         </tr>
       `;
     });
   } else {
-    productRowsHtml = `<tr><td colspan="8" style="text-align: center; padding: 10px; color: #64748b;">Sin productos registrados</td></tr>`;
+    productRowsHtml = `<tr><td colspan="8" style="text-align: center; padding: 6px; color: #64748b;">Sin productos registrados</td></tr>`;
   }
 
   const realSubtotal = nota.subtotal || subtotalCalc;
@@ -6668,49 +6847,90 @@ function getPhysicalNoteSummaryPrintHtml(nota) {
   const realTotal = (nota.total && nota.total > 0) ? nota.total : computedTotal;
 
   const causaGeneralStr = CAUSAS_MAP[nota.causaMarcar] || nota.causaMarcar || 'No especificada';
+  const facturasStr = (Array.isArray(nota.facturas) && nota.facturas.length > 0)
+    ? nota.facturas.filter(Boolean).join(', ')
+    : (nota.factura || 'N/A');
+
+  // Cálculo de cuadrícula dinámica auto-ajustable al espacio otorgado en la hoja
+  let gridCols = '1fr';
+  let gridRows = 'minmax(0, 1fr)';
+  if (nFotos === 2) {
+    gridCols = 'repeat(2, minmax(0, 1fr))';
+    gridRows = 'minmax(0, 1fr)';
+  } else if (nFotos === 3 || nFotos === 4) {
+    gridCols = 'repeat(2, minmax(0, 1fr))';
+    gridRows = 'repeat(2, minmax(0, 1fr))';
+  } else if (nFotos === 5 || nFotos === 6) {
+    gridCols = 'repeat(3, minmax(0, 1fr))';
+    gridRows = 'repeat(2, minmax(0, 1fr))';
+  } else if (nFotos >= 7 && nFotos <= 9) {
+    gridCols = 'repeat(3, minmax(0, 1fr))';
+    gridRows = `repeat(${Math.ceil(nFotos / 3)}, minmax(0, 1fr))`;
+  } else if (nFotos >= 10) {
+    gridCols = 'repeat(4, minmax(0, 1fr))';
+    gridRows = `repeat(${Math.ceil(nFotos / 4)}, minmax(0, 1fr))`;
+  }
+
+  const fotosGridHtml = nFotos > 0
+    ? `
+      <div style="flex: 1; min-height: 0; width: 100%; display: grid; grid-template-columns: ${gridCols}; grid-template-rows: ${gridRows}; gap: 6px; overflow: hidden; box-sizing: border-box;">
+        ${fotosList.map((src, idx) => `
+          <div style="min-height: 0; min-width: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 1.5px solid #0f172a; border-radius: 6px; padding: 4px; background: #ffffff; box-sizing: border-box; overflow: hidden;">
+            <div style="font-size: 8px; font-weight: 800; color: #334155; margin-bottom: 2px; flex-shrink: 0; text-transform: uppercase;">
+              Evidencia / Factura #${idx + 1} ${nFotos > 1 ? `(${idx + 1}/${nFotos})` : ''}
+            </div>
+            <img src="${src}" style="max-width: 100%; max-height: calc(100% - 14px); width: auto; height: auto; object-fit: contain; display: block;" />
+          </div>
+        `).join('')}
+      </div>
+    `
+    : `
+      <div style="text-align: center; padding: 16px; border: 2px dashed #cbd5e1; border-radius: 6px; color: #94a3b8; font-size: 10px; background: #fafafa;">
+        (Sin fotografía de incidencia adjunta para este folio)
+      </div>
+    `;
 
   return `
-    <div class="print-summary-container" style="border: 2px solid #0f172a; padding: 16px; border-radius: 8px; font-family: 'Outfit', Arial, sans-serif; background: #fff; box-sizing: border-box; min-height: 94vh; display: flex; flex-direction: column; justify-content: space-between;">
-      <div>
+    <div class="print-summary-container" style="border: 2px solid #0f172a; padding: ${isCompact ? '10px 12px' : '14px 16px'}; border-radius: 8px; font-family: 'Outfit', Arial, sans-serif; background: #fff; box-sizing: border-box; height: 98.5vh; max-height: 98.5vh; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden;">
+      <div style="flex-shrink: 0;">
         <!-- ENCABEZADO HOJA RESUMEN -->
-        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #0f172a; padding-bottom: 8px; margin-bottom: 12px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #0f172a; padding-bottom: 6px; margin-bottom: 8px;">
           <div>
-            <h2 style="margin: 0; font-size: 15px; font-weight: 800; color: #0f172a; text-transform: uppercase;">CASA AYALA DEL NOROESTE S.A. DE C.V.</h2>
-            <div style="font-size: 11px; font-weight: 700; color: #dc2626; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.5px;">HOJA DE RESUMEN DE INCIDENCIA Y FOTOGRAFÍA (NOTA FÍSICA)</div>
+            <h2 style="margin: 0; font-size: 14px; font-weight: 800; color: #0f172a; text-transform: uppercase;">CASA AYALA DEL NOROESTE S.A. DE C.V.</h2>
+            <div style="font-size: 10.5px; font-weight: 700; color: #dc2626; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.4px;">HOJA DE RESUMEN DE INCIDENCIA Y EVIDENCIA FOTOGRÁFICA (${nFotos} ${nFotos === 1 ? 'IMAGEN' : 'IMÁGENES'})</div>
           </div>
-          <div style="text-align: right; border: 1.5px solid #0f172a; padding: 4px 10px; border-radius: 4px; background: #f8fafc;">
-            <div style="font-size: 8.5px; font-weight: bold; color: #475569;">FOLIO Y SERIE</div>
-            <div style="font-size: 14px; font-weight: 800; color: #dc2626;">#${nota.folio}-${nota.serie}</div>
+          <div style="text-align: right; border: 1.5px solid #0f172a; padding: 3px 10px; border-radius: 4px; background: #f8fafc;">
+            <div style="font-size: 8px; font-weight: bold; color: #475569;">FOLIO Y SERIE</div>
+            <div style="font-size: 13.5px; font-weight: 800; color: #dc2626;">#${nota.folio}-${nota.serie}</div>
           </div>
         </div>
 
         <!-- RESUMEN DE PROPIEDAD: DE QUIÉN ES -->
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px; margin-bottom: 12px; font-size: 10px;">
-          <div><strong>CLIENTE:</strong> ${cli ? `[${cli.codigoInterno}] ${cli.nombre}` : 'N/A'}</div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px 10px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 7px 10px; margin-bottom: 8px; font-size: 9.5px;">
+          <div><strong>CLIENTE:</strong> ${cli ? `[${cli.codigoInterno}] ${cli.nombre}` : (nota.clienteNombre || 'N/A')}</div>
           <div><strong>SUCURSAL:</strong> ${suc ? suc.nombre : 'N/A'}</div>
-          <div><strong>VENDEDOR:</strong> ${ven ? ven.nombre : 'N/A'}</div>
-          <div><strong>CHOFER / REPARTIDOR:</strong> ${ope ? `${ope.nombre} (${ope.puesto})` : 'N/A'}</div>
-          <div><strong>FACTURA(S):</strong> ${nota.factura || 'N/A'}</div>
-          <div><strong>FECHAS (EMISIÓN / APLICACIÓN):</strong> ${nota.fechaEmision} / ${nota.fechaAplicacion}</div>
-          <div style="grid-column: span 2; border-top: 1px dashed #cbd5e1; padding-top: 4px; margin-top: 2px;">
+          <div><strong>VENDEDOR:</strong> ${ven ? ven.nombre : 'Público / General'}</div>
+          <div><strong>CHOFER / REPARTIDOR:</strong> ${ope ? `${ope.nombre} (${ope.puesto})` : (nota.operadorNombre || 'N/A')}</div>
+          <div style="grid-column: span 2;"><strong>FACTURA(S):</strong> ${facturasStr} &nbsp;|&nbsp; <strong>FECHAS (EMISIÓN / APLICACIÓN):</strong> ${nota.fechaEmision} / ${nota.fechaAplicacion}</div>
+          <div style="grid-column: span 2; border-top: 1px dashed #cbd5e1; padding-top: 3px;">
             <strong>RAZÓN / CAUSA PRINCIPAL:</strong> <span style="color: #b45309; font-weight: 700;">${causaGeneralStr}</span>
           </div>
         </div>
 
         <!-- TABLA DE PRODUCTOS Y CAUSAS -->
-        <div style="margin-bottom: 10px;">
-          <div style="font-size: 10px; font-weight: 800; color: #0f172a; margin-bottom: 4px;">PRODUCTOS Y DETALLE DE MONTOS</div>
-          <table style="width: 100%; border-collapse: collapse; font-size: 9.5px; border: 1px solid #94a3b8;">
+        <div style="margin-bottom: 6px;">
+          <div style="font-size: 9.5px; font-weight: 800; color: #0f172a; margin-bottom: 3px;">PRODUCTOS Y DETALLE DE MONTOS</div>
+          <table style="width: 100%; border-collapse: collapse; font-size: ${tableFontSize}; border: 1px solid #94a3b8;">
             <thead>
               <tr style="background: #e2e8f0; color: #0f172a; font-weight: 800;">
-                <th style="border: 1px solid #94a3b8; padding: 4px; text-align: center; width: 9%;">CÓDIGO</th>
-                <th style="border: 1px solid #94a3b8; padding: 4px; text-align: center; width: 7%;">CANT.</th>
-                <th style="border: 1px solid #94a3b8; padding: 4px; text-align: center; width: 6%;">P.V.</th>
-                <th style="border: 1px solid #94a3b8; padding: 4px; text-align: center; width: 12%;">BODEGA</th>
-                <th style="border: 1px solid #94a3b8; padding: 4px; text-align: left; width: 34%;">DESCRIPCIÓN</th>
-                <th style="border: 1px solid #94a3b8; padding: 4px; text-align: center; width: 12%;">CAUSA</th>
-                <th style="border: 1px solid #94a3b8; padding: 4px; text-align: right; width: 10%;">UNITARIO</th>
-                <th style="border: 1px solid #94a3b8; padding: 4px; text-align: right; width: 10%;">IMPORTE</th>
+                <th style="border: 1px solid #94a3b8; padding: ${cellPad}; text-align: center; width: 9%;">CÓDIGO</th>
+                <th style="border: 1px solid #94a3b8; padding: ${cellPad}; text-align: center; width: 7%;">CANT.</th>
+                <th style="border: 1px solid #94a3b8; padding: ${cellPad}; text-align: center; width: 6%;">P.V.</th>
+                <th style="border: 1px solid #94a3b8; padding: ${cellPad}; text-align: center; width: 12%;">BODEGA</th>
+                <th style="border: 1px solid #94a3b8; padding: ${cellPad}; text-align: left; width: 34%;">DESCRIPCIÓN</th>
+                <th style="border: 1px solid #94a3b8; padding: ${cellPad}; text-align: center; width: 12%;">CAUSA</th>
+                <th style="border: 1px solid #94a3b8; padding: ${cellPad}; text-align: right; width: 10%;">UNITARIO</th>
+                <th style="border: 1px solid #94a3b8; padding: ${cellPad}; text-align: right; width: 10%;">IMPORTE</th>
               </tr>
             </thead>
             <tbody>
@@ -6720,36 +6940,28 @@ function getPhysicalNoteSummaryPrintHtml(nota) {
         </div>
 
         <!-- TOTALES CALCULADOS Y MONTOS -->
-        <div style="display: flex; justify-content: space-between; align-items: center; background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 12px; margin-bottom: 10px;">
-          <div style="font-size: 9px; color: #475569;">
+        <div style="display: flex; justify-content: space-between; align-items: center; background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 10px; margin-bottom: 6px;">
+          <div style="font-size: 8.5px; color: #475569;">
             <strong>DESGLOSE:</strong> SUB: ${formatCurrency(realSubtotal)} | IVA: ${formatCurrency(realIva)} | IEPS: ${formatCurrency(realIeps)}
           </div>
-          <div style="font-size: 13px; font-weight: 900; color: #0f172a;">
+          <div style="font-size: 12px; font-weight: 900; color: #0f172a;">
             TOTAL NOTA DE CRÉDITO: <span style="color: #059669;">${formatCurrency(realTotal)}</span>
           </div>
         </div>
 
         ${nota.observaciones ? `
-          <div style="font-size: 9px; background: #fffbeb; border: 1px solid #fef08a; padding: 6px 10px; border-radius: 4px; margin-bottom: 10px; color: #78350f;">
+          <div style="font-size: 8.5px; background: #fffbeb; border: 1px solid #fef08a; padding: 4px 8px; border-radius: 4px; margin-bottom: 6px; color: #78350f;">
             <strong>OBSERVACIONES:</strong> ${nota.observaciones}
           </div>
         ` : ''}
       </div>
 
-      <!-- FOTOGRAFÍA CENTRADA TAMAÑO 1/4 DE PÁGINA -->
-      <div style="text-align: center; margin: 10px auto 0 auto; width: 100%; page-break-inside: avoid;">
-        <div style="font-size: 10px; font-weight: 800; color: #0f172a; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;">
-          📷 EVIDENCIA FOTOGRÁFICA DE LA INCIDENCIA (TAMAÑO 1/4 DE PÁGINA)
+      <!-- GALERÍA DE EVIDENCIA FOTOGRÁFICA AUTOAJUSTABLE AL ESPACIO OTORGADO -->
+      <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; width: 100%; margin-top: 4px; page-break-inside: avoid; overflow: hidden;">
+        <div style="font-size: 9.5px; font-weight: 800; color: #0f172a; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.4px; text-align: center; flex-shrink: 0;">
+          📷 EVIDENCIA FOTOGRÁFICA DE INCIDENCIA / FACTURAS (${nFotos} ${nFotos === 1 ? 'IMAGEN AUTOAJUSTADA' : 'IMÁGENES AUTOAJUSTADAS AL ESPACIO OTORGADO'})
         </div>
-        ${nota.incidenciaFoto ? `
-          <div style="display: flex; justify-content: center; align-items: center;">
-            <img src="${nota.incidenciaFoto}" style="max-height: 250px; max-width: 70%; width: auto; height: auto; object-fit: contain; border: 2px solid #0f172a; border-radius: 6px; padding: 4px; background: #ffffff; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);" />
-          </div>
-        ` : `
-          <div style="text-align: center; padding: 20px; border: 2px dashed #cbd5e1; border-radius: 6px; color: #94a3b8; font-size: 10px; background: #fafafa;">
-            (Sin fotografía de incidencia adjunta para este folio)
-          </div>
-        `}
+        ${fotosGridHtml}
       </div>
     </div>
   `;

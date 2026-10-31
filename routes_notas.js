@@ -21,7 +21,6 @@ module.exports = function registrarRutasNotas(app, ctx) {
     async function guardarEstado(pool, idNum, n, extra) {
         // n = objeto nota (rowToNota) ya modificado; extra = campos adicionales a mezclar en datos_json
         const json = { ...n, ...(extra || {}) };
-        delete json.incidenciaFoto;
         json.estado = json.estado_operacion === 'Cancelada' ? 'Cancelada' : json.estado_autorizacion;
         await pool.request()
             .input('id', sql.Int, idNum)
@@ -148,9 +147,7 @@ module.exports = function registrarRutasNotas(app, ctx) {
                     if (o.recordset.length) opeNombre = o.recordset[0].nombre;
                 }
 
-                const sinFoto = { ...nota };
-                delete sinFoto.incidenciaFoto; // base64 demasiado grande para la BD
-                const datosJson = JSON.stringify(sinFoto);
+                const datosJson = JSON.stringify(nota);
 
                 await pool.request()
                     .input('id',      sql.Int, idNum)
