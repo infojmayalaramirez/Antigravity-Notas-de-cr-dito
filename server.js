@@ -1233,12 +1233,16 @@ app.post('/api/faltantes-picking', async (req, res) => {
         if (!item || !item.id) return res.status(400).json({ error: 'id es requerido' });
 
         const fId   = String(item.id).trim().slice(0,100);
-        const fCod  = String(item.codigoInterno || item.codigo || '').trim().slice(0,100);
+        const fCod  = String(item.codigoInterno || item.codigo || '').trim().toUpperCase().slice(0,100);
         const fDesc = String(item.descripcion || '').trim().slice(0,500);
         const fMot  = String(item.motivo || '').trim().slice(0,255);
-        const fUsr  = String(item.idUsuario || item.id_usuario || '').trim().slice(0,50);
+        const fUsr  = String(item.idUsuario || item.id_usuario || item.usuarioId || '').trim().slice(0,50);
         const fSuc  = String(item.sucursalId || item.id_sucursal || 'S01').trim().slice(0,10);
-        const fJson = JSON.stringify(item);
+        const numPk = String(item.numPicking || '').replace(/[%_\[\]"]/g, '').trim();
+        const cliId = String(item.clienteId || '').replace(/[%_\[\]"]/g, '').trim();
+        const pkPat = numPk ? `%"numPicking":"${numPk}"%` : '';
+        const cliPat = cliId ? `%"clienteId":"${cliId}"%` : '';
+        const fJson = JSON.stringify({ ...item, codigoInterno: fCod });
 
         const pool = await getPool();
         await pool.request()
@@ -1248,11 +1252,23 @@ app.post('/api/faltantes-picking', async (req, res) => {
             .input('mot',  sql.VarChar, fMot)
             .input('usr',  sql.VarChar, fUsr)
             .input('suc',  sql.VarChar, fSuc)
-            .input('json', sql.VarChar, fJson)
+            .input('pkPat', sql.VarChar, pkPat)
+            .input('cliPat', sql.VarChar, cliPat)
+            .input('json', sql.VarChar(sql.MAX), fJson)
             .query(`
-                IF EXISTS (SELECT 1 FROM dbo.FaltantesPicking WHERE id=@id)
-                    UPDATE dbo.FaltantesPicking SET codigo_interno=@cod, descripcion=@desc,
-                        motivo=@mot, datos_json=@json WHERE id=@id
+                IF EXISTS (
+                    SELECT 1 FROM dbo.FaltantesPicking
+                    WHERE id=@id
+                       OR (ISNULL(resuelto,0)=0 AND UPPER(LTRIM(RTRIM(codigo_interno)))=@cod
+                           AND @pkPat <> '' AND datos_json LIKE @pkPat
+                           AND (@cliPat = '' OR datos_json LIKE @cliPat))
+                )
+                    UPDATE dbo.FaltantesPicking
+                    SET codigo_interno=@cod, descripcion=@desc, motivo=@mot, datos_json=@json
+                    WHERE id=@id
+                       OR (ISNULL(resuelto,0)=0 AND UPPER(LTRIM(RTRIM(codigo_interno)))=@cod
+                           AND @pkPat <> '' AND datos_json LIKE @pkPat
+                           AND (@cliPat = '' OR datos_json LIKE @cliPat))
                 ELSE
                     INSERT INTO dbo.FaltantesPicking (id,codigo_interno,descripcion,motivo,id_usuario,id_sucursal,fecha_registro,resuelto,datos_json)
                     VALUES (@id,@cod,@desc,@mot,@usr,@suc,GETDATE(),0,@json)

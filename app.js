@@ -393,15 +393,24 @@ async function handleFirebaseCloudAPI(apiPath, method, bodyText) {
     return makeResp({ success: true }, 200);
   }
 
-  // 10. Faltantes Picking
+  // 10. Faltantes Picking (con candado anti-duplicados por numPicking + codigoInterno + clienteId)
   if (cleanPath === '/api/faltantes-picking' && m === 'POST') {
     const fId = String(body.id || ('PK' + Date.now())).trim();
-    const idx = store.faltantes.findIndex(f => String(f.id) === fId);
-    const obj = { ...body, id: fId };
+    const numPk = String(body.numPicking || '').trim().toUpperCase();
+    const codInt = String(body.codigoInterno || body.codigo || '').trim().toUpperCase();
+    const cliId = String(body.clienteId || '').trim();
+    const idx = store.faltantes.findIndex(f =>
+      String(f.id) === fId ||
+      (numPk && codInt &&
+       String(f.numPicking || '').trim().toUpperCase() === numPk &&
+       String(f.codigoInterno || f.codigo || '').trim().toUpperCase() === codInt &&
+       String(f.clienteId || '').trim() === cliId)
+    );
+    const obj = { ...body, id: idx !== -1 ? store.faltantes[idx].id : fId, codigoInterno: codInt };
     if (idx !== -1) store.faltantes[idx] = obj;
     else store.faltantes.unshift(obj);
     await saveStoreToFirebase(store);
-    return makeResp({ success: true }, 200);
+    return makeResp({ success: true, id: obj.id }, 200);
   }
   if (cleanPath.startsWith('/api/faltantes-picking/') && m === 'DELETE') {
     const fId = decodeURIComponent(cleanPath.replace('/api/faltantes-picking/', '')).trim();
@@ -1117,6 +1126,9 @@ async function fetchAPIData() {
       faltantesPicking = sqlData.faltantes;
     } else if (Array.isArray(sqlData.faltantesPicking)) {
       faltantesPicking = sqlData.faltantesPicking;
+    }
+    if (window._pendingPickingItem && !faltantesPicking.some(f => String(f.id) === String(window._pendingPickingItem.id))) {
+      faltantesPicking.unshift(window._pendingPickingItem);
     }
 
     // Sincronizar en vivo los datos/permisos del usuario logueado en este dispositivo
@@ -7698,9 +7710,11 @@ function setupFaltantesPickingView() {
     });
   }
 
-  // Envío de formulario
+  // Envío de formulario con candado anti-duplicados y respuesta inmediata
+  let _isSubmittingPicking = false;
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (_isSubmittingPicking) return;
     if (!currentUser) return;
     if (currentUser.rol === 'Vendedor') {
       alert("Acceso denegado: Los vendedores no pueden registrar faltantes en pickings.");
@@ -7717,6 +7731,23 @@ function setupFaltantesPickingView() {
 
     if (!numPicking || !clienteId || !codigo || !descripcion || cantidad <= 0 || !sucursalId) {
       alert("Por favor completa todos los campos requeridos con datos válidos.");
+      return;
+    }
+
+    // Evitar duplicar el mismo Picking + Producto + Cliente
+    const dupIdx = faltantesPicking.findIndex(f =>
+      !f.eliminado &&
+      String(f.numPicking || '').trim().toUpperCase() === numPicking.toUpperCase() &&
+      String(f.codigoInterno || '').trim().toUpperCase() === codigo &&
+      String(f.clienteId || '').trim() === String(clienteId).trim()
+    );
+    if (dupIdx !== -1) {
+      alert(`El faltante del producto ${codigo} en el Picking ${numPicking} para este cliente ya está registrado.`);
+      form.reset();
+      if (currentUser.sucursalId) {
+        document.getElementById('pk-sucursal').value = currentUser.sucursalId;
+      }
+      renderFaltantesPickingView();
       return;
     }
 
@@ -7745,38 +7776,51 @@ function setupFaltantesPickingView() {
       usuarioRol: currentUser.rol
     };
 
-    // 1. Guardar en memoria de faltantes
-    faltantesPicking.unshift(nuevoFaltante);
-    saveData('ca_faltantes_picking', faltantesPicking);
+    _isSubmittingPicking = true;
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.disabled = true;
 
-    // 2. Guardar/Actualizar catálogo máster de productos reutilizables
-    const masterIdx = productosMasterPicking.findIndex(p => String(p.codigoInterno).trim().toUpperCase() === codigo);
-    if (masterIdx !== -1) {
-      productosMasterPicking[masterIdx].descripcion = descripcion;
-    } else {
-      productosMasterPicking.push({ codigoInterno: codigo, descripcion: descripcion });
-    }
-    saveData('ca_productos_picking_master', productosMasterPicking);
-
-    // 3. Enviar a la API remota si está disponible
     try {
-      await fetch(`${SQL_TUNNEL_BASE}/api/faltantes-picking`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(nuevoFaltante)
-      });
-    } catch (err) {
-      console.warn("No se pudo sincronizar faltante con la API:", err);
-    }
+      // 1. Guardar en memoria de faltantes y limpiar formulario DE INMEDIATO (para evitar segundos clics)
+      window._pendingPickingItem = nuevoFaltante;
+      faltantesPicking.unshift(nuevoFaltante);
+      saveData('ca_faltantes_picking', faltantesPicking);
 
-    alert(`Faltante en Picking ${numPicking} registrado con éxito (${cantidad} unidades de ${codigo}).`);
-    form.reset();
-    if (currentUser.sucursalId) {
-      document.getElementById('pk-sucursal').value = currentUser.sucursalId;
-    }
+      // 2. Guardar/Actualizar catálogo máster de productos reutilizables
+      const masterIdx = productosMasterPicking.findIndex(p => String(p.codigoInterno).trim().toUpperCase() === codigo);
+      if (masterIdx !== -1) {
+        productosMasterPicking[masterIdx].descripcion = descripcion;
+      } else {
+        productosMasterPicking.push({ codigoInterno: codigo, descripcion: descripcion });
+      }
+      saveData('ca_productos_picking_master', productosMasterPicking);
 
-    populatePickingProductDatalist();
-    renderFaltantesPickingView();
+      form.reset();
+      if (currentUser.sucursalId) {
+        document.getElementById('pk-sucursal').value = currentUser.sucursalId;
+      }
+      populatePickingProductDatalist();
+      renderFaltantesPickingView();
+
+      // 3. Enviar a la API remota
+      try {
+        await fetch(`${SQL_TUNNEL_BASE}/api/faltantes-picking`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(nuevoFaltante)
+        });
+      } catch (err) {
+        console.warn("No se pudo sincronizar faltante con la API:", err);
+      } finally {
+        window._pendingPickingItem = null;
+      }
+
+      alert(`Faltante en Picking ${numPicking} registrado con éxito (${cantidad} unidades de ${codigo}).`);
+      renderFaltantesPickingView();
+    } finally {
+      _isSubmittingPicking = false;
+      if (submitBtn) submitBtn.disabled = false;
+    }
   });
 
   // Listeners para filtros de gráfica por período
