@@ -528,7 +528,7 @@ async function ensureDatabaseSchema() {
                     bloquear_exceso BIT DEFAULT 0
                 );
         `);
-        // Añadir columnas faltantes si la tabla ya existía con esquema viejo
+        // Añadir columnas faltantes si la tabla ya existía con esquema viejo y relajar columnas legacy NOT NULL
         await pool.request().query(`
             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Presupuestos') AND name='vendedor_id')
                 ALTER TABLE dbo.Presupuestos ADD vendedor_id VARCHAR(50) NULL;
@@ -542,6 +542,10 @@ async function ensureDatabaseSchema() {
                 ALTER TABLE dbo.Presupuestos ADD fecha_limite VARCHAR(50) NULL;
             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Presupuestos') AND name='bloquear_exceso')
                 ALTER TABLE dbo.Presupuestos ADD bloquear_exceso BIT DEFAULT 0;
+            IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Presupuestos') AND name='id_sucursal')
+                ALTER TABLE dbo.Presupuestos ALTER COLUMN id_sucursal VARCHAR(50) NULL;
+            IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.Presupuestos') AND name='mes_anio')
+                ALTER TABLE dbo.Presupuestos ALTER COLUMN mes_anio VARCHAR(20) NULL;
         `);
 
         // 6. Tabla FaltantesPicking en SQL Server (antes era array en memoria — se reiniciaba al cerrar el servidor)
@@ -1539,6 +1543,36 @@ async function pullFromFirebaseToSQL() {
                             id_vendedor=CASE WHEN @ven<>'PUBLICO' THEN @ven ELSE ISNULL(id_vendedor,'PUBLICO') END
                         WHERE id_cliente=@id
                 `).catch(() => {});
+        }
+
+        // 2.5. Presupuestos asignados en la nube o localmente
+        for (const p of toArr(fb.presupuestos)) {
+            const pVid = String(p.vendedorId || '').trim().slice(0, 50);
+            if (!pVid) continue;
+            const pMes = String(p.mes || new Date().toISOString().slice(0, 7)).trim().slice(0, 20);
+            const pId = String(p.id || `PP_${pVid}_${pMes}`).trim().slice(0, 100);
+            const pLim = parseFloat(p.limite || 0) || 0;
+            const pCon = parseFloat(p.consumido || 0) || 0;
+            const pFL = String(p.fechaLimite || '').trim().slice(0, 50);
+            const pBE = p.bloquearExceso ? 1 : 0;
+            await pool.request()
+                .input('id', sql.VarChar, pId)
+                .input('vid', sql.VarChar, pVid)
+                .input('mes', sql.VarChar, pMes)
+                .input('lim', sql.Decimal(18, 2), pLim)
+                .input('con', sql.Decimal(18, 2), pCon)
+                .input('fl', sql.VarChar, pFL)
+                .input('be', sql.Bit, pBE)
+                .query(`
+                    IF EXISTS (SELECT 1 FROM dbo.Presupuestos WHERE id_presupuesto=@id OR (vendedor_id=@vid AND mes=@mes))
+                        UPDATE dbo.Presupuestos
+                        SET vendedor_id=@vid, mes=@mes, limite=@lim, consumido=@con,
+                            fecha_limite=@fl, bloquear_exceso=@be
+                        WHERE id_presupuesto=@id OR (vendedor_id=@vid AND mes=@mes)
+                    ELSE
+                        INSERT INTO dbo.Presupuestos (id_presupuesto,vendedor_id,mes,limite,consumido,fecha_limite,bloquear_exceso)
+                        VALUES (@id,@vid,@mes,@lim,@con,@fl,@be)
+                `).catch((err) => console.warn('[Firebase Pull Presupuesto]', err.message));
         }
 
         // 3. Notas de crédito creadas o firmadas/canceladas en la nube mientras la laptop estuvo apagada

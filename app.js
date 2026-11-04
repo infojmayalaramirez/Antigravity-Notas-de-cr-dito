@@ -2001,7 +2001,7 @@ function applyRolePermissions() {
     'Administrador': ['dashboard', 'notas-fisicas', 'notas-financieras', 'lotes', 'presupuestos', 'sucursales', 'usuarios', 'catalogos', 'reportes', 'faltantes-picking'],
     'Gerente': ['dashboard', 'notas-fisicas', 'notas-financieras', 'lotes', 'presupuestos', 'catalogos', 'reportes', 'faltantes-picking'],
     'Almacen': ['dashboard', 'notas-fisicas', 'catalogos', 'faltantes-picking'],
-    'Contabilidad': ['dashboard', 'notas-fisicas', 'notas-financieras', 'lotes', 'catalogos', 'reportes', 'faltantes-picking'],
+    'Contabilidad': ['dashboard', 'notas-fisicas', 'notas-financieras', 'lotes', 'presupuestos', 'catalogos', 'reportes', 'faltantes-picking'],
     'Vendedor': ['dashboard', 'notas-fisicas', 'notas-financieras', 'presupuestos', 'catalogos']
   };
   const allowedSet = new Set(roleAllowedViews[rol] || roleAllowedViews['Vendedor']);
@@ -2382,9 +2382,9 @@ function initDashboard() {
     if (cardSellerBudget) cardSellerBudget.classList.add('hidden');
   }
 
-  // Tarjeta de Desglose de Avance Presupuestal por Vendedor para Administrador y Gerente en Dashboard
+  // Tarjeta de Desglose de Avance Presupuestal por Vendedor para Administrador, Gerente y Contabilidad en Dashboard
   const cardAdminBudget = document.getElementById('card-admin-budget-breakdown');
-  if (currentUser.rol === 'Administrador' || currentUser.rol === 'Gerente') {
+  if (currentUser.rol === 'Administrador' || currentUser.rol === 'Gerente' || currentUser.rol === 'Contabilidad') {
     if (cardAdminBudget) {
       cardAdminBudget.classList.remove('hidden');
       const periodBadge = document.getElementById('dash-admin-budget-period-badge');
@@ -4459,14 +4459,21 @@ function setupPresupuestosView() {
   const curMes = localMonthStr();
   const filterMonthEl = document.getElementById('budget-filter-month');
   const budgetMonthEl = document.getElementById('budget-month');
-  if (filterMonthEl && (!filterMonthEl.value || filterMonthEl.value === '2026-03')) {
+  const budgetDeadlineEl = document.getElementById('budget-deadline');
+  if (filterMonthEl && (!filterMonthEl.value || filterMonthEl.value === '2026-03' || filterMonthEl.value === '2026-07')) {
     filterMonthEl.value = curMes;
   }
-  if (budgetMonthEl && (!budgetMonthEl.value || budgetMonthEl.value === '2026-03')) {
+  if (budgetMonthEl && (!budgetMonthEl.value || budgetMonthEl.value === '2026-03' || budgetMonthEl.value === '2026-07')) {
     budgetMonthEl.value = curMes;
+  }
+  if (budgetDeadlineEl && !budgetDeadlineEl.value) {
+    budgetDeadlineEl.value = curMes + '-28';
   }
 
   document.getElementById('budget-filter-month').addEventListener('change', () => {
+    if (budgetMonthEl && filterMonthEl.value) {
+      budgetMonthEl.value = filterMonthEl.value;
+    }
     renderPresupuestosGrid();
   });
 
@@ -4475,8 +4482,13 @@ function setupPresupuestosView() {
     const vendId = document.getElementById('budget-vendedor').value;
     const mes = document.getElementById('budget-month').value || localMonthStr();
     const limite = parseFloat(document.getElementById('budget-limit').value) || 0;
-    const fechaLimite = document.getElementById('budget-deadline').value;
+    const fechaLimite = document.getElementById('budget-deadline').value || (mes + '-28');
     const bloquearExceso = document.getElementById('budget-block-excess').checked;
+
+    if (!vendId) {
+      alert("Por favor selecciona un vendedor.");
+      return;
+    }
 
     const idx = presupuestos.findIndex(p => matchSellerIdOrName(p.vendedorId, vendId) && p.mes === mes);
     const consumidoActual = getBudgetConsumedForSeller(vendId, mes);
@@ -4492,6 +4504,10 @@ function setupPresupuestosView() {
       presupuestos.push(pptoObj);
     }
 
+    if (filterMonthEl) {
+      filterMonthEl.value = mes;
+    }
+
     saveData('ca_presupuestos', presupuestos);
     try {
       await pushToSQLServer('presupuestos', pptoObj);
@@ -4499,7 +4515,7 @@ function setupPresupuestosView() {
     } catch (err) {
       console.warn('[setupPresupuestosView] Error guardando presupuesto en SQL:', err);
     }
-    alert("Presupuesto guardado y sincronizado en SQL Server.");
+    alert("Presupuesto guardado y sincronizado correctamente.");
     renderPresupuestosGrid();
     initDashboard();
   });
@@ -4507,6 +4523,9 @@ function setupPresupuestosView() {
 
 function renderPresupuestosGrid() {
   const filterEl = document.getElementById('budget-filter-month');
+  if (filterEl && (!filterEl.value || filterEl.value === '2026-03' || filterEl.value === '2026-07')) {
+    filterEl.value = localMonthStr();
+  }
   const selectFilter = (filterEl && filterEl.value) ? filterEl.value : localMonthStr();
   const container = document.getElementById('container-budgets-grid');
   container.innerHTML = '';
@@ -4527,7 +4546,7 @@ function renderPresupuestosGrid() {
 
   refreshAllModuleDropdowns();
   const budgetMonthEl = document.getElementById('budget-month');
-  if (budgetMonthEl && document.activeElement !== budgetMonthEl) {
+  if (budgetMonthEl && !budgetMonthEl.value) {
     budgetMonthEl.value = selectFilter;
   }
 

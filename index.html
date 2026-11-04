@@ -47,8 +47,10 @@
           <label>Usuario / Correo</label>
           <select id="login-email" class="form-control" required>
             <option value="cansagdl@gmail.com">Administrador Universal (Administrador) - cansagdl@gmail.com</option>
-            <option value="consuelo.carrillo2022@gmail.com">Consuelo Carrillo (Contabilidad) - consuelo.carrillo2022@gmail.com</option>
-            <option value="laurasanchezvazquez07@gmail.com">Laura Sanchez (Vendedor) - laurasanchezvazquez07@gmail.com</option>
+            <option value="consuelo.carrillo2022@gmail.com">Consuelo Carrillo (Contabilidad) -
+              consuelo.carrillo2022@gmail.com</option>
+            <option value="laurasanchezvazquez07@gmail.com">Laura Sanchez (Vendedor) - laurasanchezvazquez07@gmail.com
+            </option>
             <option value="lafer7522@gmail.com">Araceli Escobar (Vendedor) - lafer7522@gmail.com</option>
           </select>
         </div>
@@ -147,7 +149,8 @@
 
         <!-- Sesión de Usuario Autenticado -->
         <div class="user-selector-container">
-          <span id="cloud-sync-status-indicator" style="font-size: 11px; font-weight: 600; background: rgba(255,255,255,0.15); padding: 4px 8px; border-radius: 4px; color: #ffffff; margin-right: 8px;">
+          <span id="cloud-sync-status-indicator"
+            style="font-size: 11px; font-weight: 600; background: rgba(255,255,255,0.15); padding: 4px 8px; border-radius: 4px; color: #ffffff; margin-right: 8px;">
             <i class="fa-solid fa-cloud"></i> ☁️ Nube Activa
           </span>
           <span style="font-weight:600; color:var(--primary-color);" id="header-user-info">
@@ -267,15 +270,19 @@
           </div>
 
           <!-- Tarjeta Detallada de Avance de Presupuesto Mensual (Exclusiva para Vendedor en Dashboard) -->
-          <div id="card-vendedor-budget-detail" class="card hidden" style="margin-bottom: 24px; border-left: 5px solid var(--primary-color);">
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+          <div id="card-vendedor-budget-detail" class="card hidden"
+            style="margin-bottom: 24px; border-left: 5px solid var(--primary-color);">
+            <div
+              style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
               <h3 style="font-size:15px; margin:0; color:var(--primary-color); font-weight:700;">
                 <i class="fa-solid fa-chart-line"></i> Resumen de Avance Presupuestal Mensual
               </h3>
-              <span class="badge badge-signed" id="dash-vendedor-status-badge"><i class="fa-solid fa-check"></i> En Rango</span>
+              <span class="badge badge-signed" id="dash-vendedor-status-badge"><i class="fa-solid fa-check"></i> En
+                Rango</span>
             </div>
-            
-            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:15px; margin-bottom:16px;">
+
+            <div
+              style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:15px; margin-bottom:16px;">
               <div style="background:var(--bg-light); padding:12px 16px; border-radius:8px;">
                 <span style="font-size:11px; color:var(--text-muted); display:block;">Monto Límite Asignado</span>
                 <strong style="font-size:16px; color:var(--text-color);" id="dash-vendedor-limite">$0.00</strong>
@@ -294,22 +301,27 @@
               </div>
             </div>
 
-            <div class="budget-progress-bar" style="height:12px; border-radius:6px; background:#e2e8f0; overflow:hidden;">
-              <div id="dash-vendedor-progress-fill" class="budget-progress-fill" style="width:0%; height:100%; transition:width 0.5s ease;"></div>
+            <div class="budget-progress-bar"
+              style="height:12px; border-radius:6px; background:#e2e8f0; overflow:hidden;">
+              <div id="dash-vendedor-progress-fill" class="budget-progress-fill"
+                style="width:0%; height:100%; transition:width 0.5s ease;"></div>
             </div>
           </div>
 
           <!-- Tarjeta Detallada de Avance y Consumo Presupuestal por Vendedor (Exclusiva para Administrador y Gerente en Dashboard) -->
-          <div id="card-admin-budget-breakdown" class="card hidden" style="margin-bottom: 24px; border-left: 5px solid var(--primary-color);">
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:16px;">
+          <div id="card-admin-budget-breakdown" class="card hidden"
+            style="margin-bottom: 24px; border-left: 5px solid var(--primary-color);">
+            <div
+              style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:16px;">
               <h3 style="font-size:15px; margin:0; color:var(--primary-color); font-weight:700;">
                 <i class="fa-solid fa-users-gear"></i> Avance Presupuestal Individual por Vendedor
               </h3>
-              <span class="badge badge-secondary" id="dash-admin-budget-period-badge" style="background:var(--bg-light); color:var(--text-muted); border:1px solid var(--border-color);">
+              <span class="badge badge-secondary" id="dash-admin-budget-period-badge"
+                style="background:var(--bg-light); color:var(--text-muted); border:1px solid var(--border-color);">
                 <i class="fa-solid fa-calendar-days"></i> Mes Actual
               </span>
             </div>
-            
+
             <div class="table-responsive">
               <table class="table" id="table-dash-admin-vendedores-budget" style="margin-bottom:0;">
                 <thead>
@@ -332,11 +344,13 @@
 
           <!-- Contenedor Responsivo de Gráficas Interactivas de Inteligencia de Negocio -->
           <div class="card" style="margin-bottom: 24px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:16px;">
+            <div
+              style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:16px;">
               <div class="card-title" style="font-size: 15px; color: var(--primary-color); margin:0;">
                 <i class="fa-solid fa-chart-pie"></i> Gráficas Interactivas de Inteligencia de Negocio
               </div>
-              <button class="btn btn-secondary btn-sm" id="btn-export-dash-charts" onclick="exportDashboardChartsAsImage()" style="font-weight:600;">
+              <button class="btn btn-secondary btn-sm" id="btn-export-dash-charts"
+                onclick="exportDashboardChartsAsImage()" style="font-weight:600;">
                 <i class="fa-solid fa-file-image"></i> Descargar Imagen de Gráficas
               </button>
             </div>
@@ -434,7 +448,8 @@
               <div class="card-title">
                 <span>Notas de Crédito de Producto Físico y Logística</span>
                 <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                  <button class="btn btn-secondary" id="btn-go-lotes-reparto" onclick="switchView('lotes')"><i class="fa-solid fa-print"></i> Imprimir Lote para Reparto</button>
+                  <button class="btn btn-secondary" id="btn-go-lotes-reparto" onclick="switchView('lotes')"><i
+                      class="fa-solid fa-print"></i> Imprimir Lote para Reparto</button>
                   <button class="btn btn-primary" id="btn-new-nota-fisica"><i class="fa-solid fa-plus"></i> Crear Nota
                     Física</button>
                 </div>
@@ -586,15 +601,19 @@
 
                 <!-- Carga de Fotos de la Incidencia / Facturas (Múltiples Imágenes) -->
                 <div class="form-group full-width" style="margin-bottom: 24px;">
-                  <label style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
+                  <label
+                    style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
                     <span>Fotos de Incidencia / Facturas (Puedes subir una o varias imágenes)</span>
-                    <span id="nf-fotos-count-badge" class="badge badge-info hidden" style="font-size: 11px;">0 imágenes</span>
+                    <span id="nf-fotos-count-badge" class="badge badge-info hidden" style="font-size: 11px;">0
+                      imágenes</span>
                   </label>
                   <div class="image-upload-wrapper" id="nf-upload-wrapper">
                     <div id="nf-upload-prompt" class="nf-upload-prompt">
                       <i class="fa-solid fa-images fa-2x" style="color: var(--text-muted); margin-bottom: 8px;"></i>
-                      <p style="font-weight: 600; margin-bottom: 2px;">Haz clic o arrastra una o varias imágenes aquí</p>
-                      <p class="logo-sub">Soporta múltiples fotos de facturas o mercancía (se ajustan automáticamente al formato)</p>
+                      <p style="font-weight: 600; margin-bottom: 2px;">Haz clic o arrastra una o varias imágenes aquí
+                      </p>
+                      <p class="logo-sub">Soporta múltiples fotos de facturas o mercancía (se ajustan automáticamente al
+                        formato)</p>
                     </div>
                     <input type="file" id="nf-foto-input" accept="image/*" multiple style="display: none;">
                     <div id="nf-preview-container" class="image-preview-container hidden">
@@ -604,7 +623,8 @@
                         <button type="button" class="btn btn-secondary btn-sm" id="btn-nf-add-more-imgs">
                           <i class="fa-solid fa-plus"></i> Agregar más imágenes
                         </button>
-                        <button type="button" class="btn btn-danger btn-sm" id="btn-nf-remove-img" title="Quitar todas las imágenes">
+                        <button type="button" class="btn btn-danger btn-sm" id="btn-nf-remove-img"
+                          title="Quitar todas las imágenes">
                           <i class="fa-solid fa-trash-can"></i> Quitar todas
                         </button>
                       </div>
@@ -798,19 +818,24 @@
             </div>
 
             <!-- Bloque de aprobación para notas Pendientes -->
-            <div id="det-pending-auth-box" class="hidden" style="margin: 16px 0; padding: 14px; background: #fffbeb; border: 1px solid #f59e0b; border-radius: var(--radius-sm); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+            <div id="det-pending-auth-box" class="hidden"
+              style="margin: 16px 0; padding: 14px; background: #fffbeb; border: 1px solid #f59e0b; border-radius: var(--radius-sm); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
               <div style="font-size: 13px; color: #92400e; font-weight: 600;">
-                <i class="fa-solid fa-clock"></i> Esta nota está <strong>Pendiente de Autorización</strong> por Gerencia / Administración.
+                <i class="fa-solid fa-clock"></i> Esta nota está <strong>Pendiente de Autorización</strong> por Gerencia
+                / Administración.
               </div>
               <div style="display: flex; gap: 8px;" id="det-pending-auth-buttons">
-                <button type="button" class="btn btn-success btn-sm" id="btn-approve-nota-action"><i class="fa-solid fa-check"></i> Autorizar Nota</button>
-                <button type="button" class="btn btn-danger btn-sm" id="btn-reject-nota-action"><i class="fa-solid fa-xmark"></i> Rechazar</button>
+                <button type="button" class="btn btn-success btn-sm" id="btn-approve-nota-action"><i
+                    class="fa-solid fa-check"></i> Autorizar Nota</button>
+                <button type="button" class="btn btn-danger btn-sm" id="btn-reject-nota-action"><i
+                    class="fa-solid fa-xmark"></i> Rechazar</button>
               </div>
             </div>
 
             <!-- Opción de cancelar la nota si no está firmada o por Gerente -->
             <div style="margin-top: 30px; display:flex; justify-content:space-between; align-items:center;">
-              <button type="button" class="btn btn-danger btn-sm" id="btn-cancel-nota-action"><i class="fa-solid fa-ban"></i> Cancelar
+              <button type="button" class="btn btn-danger btn-sm" id="btn-cancel-nota-action"><i
+                  class="fa-solid fa-ban"></i> Cancelar
                 Nota de Crédito</button>
               <div class="badge badge-draft" id="det-estado-badge">Borrador</div>
             </div>
@@ -1099,7 +1124,8 @@
           <div class="card">
             <div class="card-title">Pre-impresión de Lotes de Notas de Crédito en Blanco (Envío en Reparto)</div>
             <p style="margin-bottom: 20px; color: var(--text-muted);">
-              Genera un lote de folios consecutivos listos para mandar en el reparto y control logístico. Cada hoja tamaño carta impresa
+              Genera un lote de folios consecutivos listos para mandar en el reparto y control logístico. Cada hoja
+              tamaño carta impresa
               contiene una nota dividida en dos mitades (la mitad superior es el <strong>ORIGINAL</strong> y la mitad
               inferior es la <strong>COPIA</strong>), idéntica al formato oficial.
             </p>
@@ -1135,7 +1161,7 @@
             <div class="card-title">
               <span>Presupuestos Mensuales de Notas de Crédito Financieras</span>
               <div style="display:flex; gap:8px;">
-                <input type="month" id="budget-filter-month" class="form-control" value="2026-07"
+                <input type="month" id="budget-filter-month" class="form-control"
                   style="padding: 4px 8px; width: 150px;">
               </div>
             </div>
@@ -1251,15 +1277,19 @@
             <!-- Estructura Informativa de Jerarquía de Usuarios y Matriz de Permisos -->
             <div class="card"
               style="margin-bottom: 24px; border-left: 4px solid var(--accent-color); background: #ffffff;">
-              <div class="card-title" style="font-size: 15px; color: var(--primary-color); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+              <div class="card-title"
+                style="font-size: 15px; color: var(--primary-color); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
                 <span><i class="fa-solid fa-sitemap"></i> Jerarquía de Usuarios y Matriz de Permisos</span>
-                <span class="badge badge-secondary" style="font-size:11px; font-weight:600;">Estructura de Roles y Accesos del Sistema</span>
+                <span class="badge badge-secondary" style="font-size:11px; font-weight:600;">Estructura de Roles y
+                  Accesos del Sistema</span>
               </div>
-              
-              <!-- Cards de Niveles de Jerarquía -->
-              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px;">
 
-                <div style="background: #fffbe6; padding: 12px; border-radius: var(--radius-sm); border: 1px solid #fef08a;">
+              <!-- Cards de Niveles de Jerarquía -->
+              <div
+                style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px;">
+
+                <div
+                  style="background: #fffbe6; padding: 12px; border-radius: var(--radius-sm); border: 1px solid #fef08a;">
                   <div style="font-weight: 700; color: #b45309; font-size: 12.5px; margin-bottom: 4px;">
                     👑 1. Administrador Universal
                   </div>
@@ -1274,7 +1304,8 @@
                   </div>
                 </div>
 
-                <div style="background: #f8fafc; padding: 12px; border-radius: var(--radius-sm); border: 1px solid #e2e8f0;">
+                <div
+                  style="background: #f8fafc; padding: 12px; border-radius: var(--radius-sm); border: 1px solid #e2e8f0;">
                   <div style="font-weight: 700; color: #1e293b; font-size: 12.5px; margin-bottom: 4px;">
                     🏢 2. Gerente de Sucursal
                   </div>
@@ -1289,7 +1320,8 @@
                   </div>
                 </div>
 
-                <div style="background: #f0f9ff; padding: 12px; border-radius: var(--radius-sm); border: 1px solid #bae6fd;">
+                <div
+                  style="background: #f0f9ff; padding: 12px; border-radius: var(--radius-sm); border: 1px solid #bae6fd;">
                   <div style="font-weight: 700; color: #0284c7; font-size: 12.5px; margin-bottom: 4px;">
                     📦 3. Jefe de Almacén
                   </div>
@@ -1302,7 +1334,8 @@
                   </div>
                 </div>
 
-                <div style="background: #f0fdf4; padding: 12px; border-radius: var(--radius-sm); border: 1px solid #bbf7d0;">
+                <div
+                  style="background: #f0fdf4; padding: 12px; border-radius: var(--radius-sm); border: 1px solid #bbf7d0;">
                   <div style="font-weight: 700; color: #16a34a; font-size: 12.5px; margin-bottom: 4px;">
                     📊 4. Contabilidad Central
                   </div>
@@ -1316,7 +1349,8 @@
                   </div>
                 </div>
 
-                <div style="background: #faf5ff; padding: 12px; border-radius: var(--radius-sm); border: 1px solid #e9d5ff;">
+                <div
+                  style="background: #faf5ff; padding: 12px; border-radius: var(--radius-sm); border: 1px solid #e9d5ff;">
                   <div style="font-weight: 700; color: #8b5cf6; font-size: 12.5px; margin-bottom: 4px;">
                     💼 5. Vendedor
                   </div>
@@ -1382,7 +1416,8 @@
                       <td style="text-align:center;"><span class="badge badge-signed">✓ Full / Autoriza</span></td>
                       <td style="text-align:center;"><span class="badge badge-signed">✓ Captura / Autoriza</span></td>
                       <td style="text-align:center; color:var(--text-muted);">-</td>
-                      <td style="text-align:center;"><span class="badge badge-signed">✓ Captura / Firma Auditoría</span></td>
+                      <td style="text-align:center;"><span class="badge badge-signed">✓ Captura / Firma Auditoría</span>
+                      </td>
                       <td style="text-align:center;"><span class="badge badge-draft">📝 Captura Solicitud</span></td>
                     </tr>
                     <tr style="background:#fafafa;">
@@ -1513,7 +1548,8 @@
               style="border-bottom-left-radius:0; border-bottom-right-radius:0; border-bottom:none;">Vendedores</button>
             <button class="btn btn-secondary btn-sm" id="tab-cat-proveedores"
               style="border-bottom-left-radius:0; border-bottom-right-radius:0; border-bottom:none;">Proveedores</button>
-            <button class="btn btn-secondary btn-sm" onclick="fetchAPIData().then(() => alert('Catálogos sincronizados correctamente.'))"
+            <button class="btn btn-secondary btn-sm"
+              onclick="fetchAPIData().then(() => alert('Catálogos sincronizados correctamente.'))"
               style="margin-left: auto; border-bottom-left-radius:0; border-bottom-right-radius:0; border-bottom:none; font-weight:600;"><i
                 class="fa-solid fa-rotate"></i> Sincronizar Catálogos</button>
             <button class="btn btn-warning btn-sm" onclick="migrarLocalStorageASQL()" id="btn-migrar-sql"
@@ -1524,7 +1560,8 @@
                 class="fa-solid fa-file-export"></i> Exportar Respaldo</button>
             <label class="btn btn-secondary btn-sm"
               style="border-bottom-left-radius:0; border-bottom-right-radius:0; border-bottom:none; font-weight:600; cursor:pointer; margin-bottom:0;"><i
-                class="fa-solid fa-file-import"></i> Importar Respaldo <input type="file" accept=".json" onchange="importarDatosJSON(event)" style="display:none;"></label>
+                class="fa-solid fa-file-import"></i> Importar Respaldo <input type="file" accept=".json"
+                onchange="importarDatosJSON(event)" style="display:none;"></label>
             <button class="btn btn-secondary btn-sm" onclick="clearCatalogosData()"
               style="border-bottom-left-radius:0; border-bottom-right-radius:0; border-bottom:none; color: var(--danger-color); font-weight:600;"><i
                 class="fa-solid fa-trash-arrow-up"></i> Limpiar Catálogos</button>
@@ -1547,7 +1584,8 @@
                     <input type="text" id="cat-cli-rfc" class="form-control" required placeholder="Ejem: CTE-101">
                   </div>
                   <div class="form-group" style="margin-bottom:12px;" id="group-cat-cli-vendedor">
-                    <label>Vendedor Asignado <span style="font-size:10px; color:#b45309; font-weight:700;">(Solo Admin)</span></label>
+                    <label>Vendedor Asignado <span style="font-size:10px; color:#b45309; font-weight:700;">(Solo
+                        Admin)</span></label>
                     <select id="cat-cli-vendedor" class="form-control">
                       <option value="PUBLICO">Público / General</option>
                     </select>
@@ -1559,7 +1597,8 @@
                   </div>
                   <div style="display:flex; gap:8px;">
                     <button type="submit" class="btn btn-primary btn-sm" id="btn-save-cliente">Guardar Cliente</button>
-                    <button type="button" class="btn btn-secondary btn-sm hidden" id="btn-cancel-edit-cliente">Cancelar</button>
+                    <button type="button" class="btn btn-secondary btn-sm hidden"
+                      id="btn-cancel-edit-cliente">Cancelar</button>
                   </div>
                 </form>
               </div>
@@ -1789,9 +1828,13 @@
               </div>
 
               <div style="margin-bottom: 24px; display:flex; gap:12px; margin-top: 15px; flex-wrap:wrap;">
-                <button class="btn btn-primary" id="btn-generate-report"><i class="fa-solid fa-search"></i> Buscar Registros</button>
-                <button class="btn btn-success" id="btn-export-excel" onclick="exportReportToCSV()" style="background-color:#16a34a; color:#fff;"><i class="fa-solid fa-file-excel"></i> Descargar Excel / CSV</button>
-                <button class="btn btn-secondary" id="btn-print-report"><i class="fa-solid fa-file-pdf"></i> Imprimir / Exportar PDF</button>
+                <button class="btn btn-primary" id="btn-generate-report"><i class="fa-solid fa-search"></i> Buscar
+                  Registros</button>
+                <button class="btn btn-success" id="btn-export-excel" onclick="exportReportToCSV()"
+                  style="background-color:#16a34a; color:#fff;"><i class="fa-solid fa-file-excel"></i> Descargar Excel /
+                  CSV</button>
+                <button class="btn btn-secondary" id="btn-print-report"><i class="fa-solid fa-file-pdf"></i> Imprimir /
+                  Exportar PDF</button>
               </div>
 
               <!-- Tarjeta Informativa de Exportación -->
@@ -1800,7 +1843,10 @@
                   <i class="fa-solid fa-file-export"></i> Descarga y Exportación Directa de Información
                 </div>
                 <p style="font-size:12.5px; color: #1e293b; margin:0; line-height: 1.5;">
-                  Usa los filtros de arriba para personalizar el reporte (por <strong>Vendedor, Sucursal, Cliente, Proveedor o Tipo de Nota Física / Financiera</strong>) y haz clic en <strong>Descargar Excel / CSV</strong> para generar la hoja de cálculo completa con montos totales, desglose de productos y estatus en Microsoft Excel.
+                  Usa los filtros de arriba para personalizar el reporte (por <strong>Vendedor, Sucursal, Cliente,
+                    Proveedor o Tipo de Nota Física / Financiera</strong>) y haz clic en <strong>Descargar Excel /
+                    CSV</strong> para generar la hoja de cálculo completa con montos totales, desglose de productos y
+                  estatus en Microsoft Excel.
                 </p>
               </div>
 
@@ -1837,11 +1883,13 @@
 
             <!-- PANEL B: ESTADÍSTICAS E INCIDENCIAS -->
             <div id="panel-rep-statistics" class="hidden">
-              <div class="card" style="background-color: #f8fafc; margin-bottom: 20px; border-left: 4px solid var(--accent-color);">
+              <div class="card"
+                style="background-color: #f8fafc; margin-bottom: 20px; border-left: 4px solid var(--accent-color);">
                 <div class="card-title" style="font-size:14px; margin-bottom: 12px; color: var(--primary-color);">
                   <i class="fa-solid fa-filter"></i> Filtros de Estadística de Devoluciones y Notas
                 </div>
-                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:12px; align-items:flex-end;">
+                <div
+                  style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:12px; align-items:flex-end;">
                   <div class="form-group" style="margin-bottom: 0;">
                     <label style="font-size:11px; font-weight:600;">Tipo de Nota</label>
                     <select id="stats-tipo-nota" class="form-control" style="font-size:12px;">
@@ -1886,10 +1934,13 @@
                   <button class="btn btn-primary" id="btn-calculate-stats" style="height: 38px;">
                     <i class="fa-solid fa-chart-bar"></i> Recalcular Estadísticas
                   </button>
-                  <button class="btn btn-success" id="btn-export-stats-excel" onclick="exportStatisticsToCSV()" style="background-color:#16a34a; color:#fff; font-weight:700; border:none; height: 38px;">
+                  <button class="btn btn-success" id="btn-export-stats-excel" onclick="exportStatisticsToCSV()"
+                    style="background-color:#16a34a; color:#fff; font-weight:700; border:none; height: 38px;">
                     <i class="fa-solid fa-file-excel"></i> Descargar Excel de Estadísticas
                   </button>
-                  <button class="btn btn-warning" id="btn-print-stats-brief" onclick="printReturnsStatisticsBriefForSignatures()" style="background-color:#d97706; color:#fff; font-weight:700; border:none; height: 38px;">
+                  <button class="btn btn-warning" id="btn-print-stats-brief"
+                    onclick="printReturnsStatisticsBriefForSignatures()"
+                    style="background-color:#d97706; color:#fff; font-weight:700; border:none; height: 38px;">
                     <i class="fa-solid fa-file-signature"></i> Brief / Imprimir PDF para Firmas
                   </button>
                 </div>
@@ -2097,7 +2148,8 @@
               <i class="fa-solid fa-boxes-packing"></i> Registro de Faltante de Mercancía en Picking (Antes de Surtir)
             </div>
             <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
-              Registra incidencias de productos faltantes detectados en pickings antes del surtido. La información de código y descripción se almacena para autocompletarse en futuras capturas.
+              Registra incidencias de productos faltantes detectados en pickings antes del surtido. La información de
+              código y descripción se almacena para autocompletarse en futuras capturas.
             </p>
 
             <form id="form-faltante-picking">
@@ -2114,18 +2166,21 @@
                 </div>
                 <div class="form-group">
                   <label>Código Interno de Producto <span style="color:red;">*</span></label>
-                  <input type="text" id="pk-codigo" class="form-control" list="list-productos-picking" placeholder="Ej. ART-1049" required autocomplete="off">
+                  <input type="text" id="pk-codigo" class="form-control" list="list-productos-picking"
+                    placeholder="Ej. ART-1049" required autocomplete="off">
                   <datalist id="list-productos-picking">
                     <!-- Dinámico -->
                   </datalist>
                 </div>
                 <div class="form-group">
                   <label>Descripción del Producto <span style="color:red;">*</span></label>
-                  <input type="text" id="pk-descripcion" class="form-control" placeholder="Ej. Aceite Vegetal 1L" required>
+                  <input type="text" id="pk-descripcion" class="form-control" placeholder="Ej. Aceite Vegetal 1L"
+                    required>
                 </div>
                 <div class="form-group">
                   <label>Cantidad Faltante (Unidades / Cajas) <span style="color:red;">*</span></label>
-                  <input type="number" id="pk-cantidad" class="form-control" min="1" step="1" placeholder="Ej. 5" required>
+                  <input type="number" id="pk-cantidad" class="form-control" min="1" step="1" placeholder="Ej. 5"
+                    required>
                 </div>
                 <div class="form-group">
                   <label>Sucursal <span style="color:red;">*</span></label>
@@ -2137,7 +2192,8 @@
 
               <div class="form-group" style="margin-top: 12px;">
                 <label>Observaciones / Causa de Faltante</label>
-                <input type="text" id="pk-observaciones" class="form-control" placeholder="Ej. Sin existencias en pasillo principal al momento de surtir">
+                <input type="text" id="pk-observaciones" class="form-control"
+                  placeholder="Ej. Sin existencias en pasillo principal al momento de surtir">
               </div>
 
               <div style="margin-top: 18px; text-align: right;">
@@ -2150,7 +2206,8 @@
 
           <!-- Gráfica de Barras Horizontal de Productos Faltantes -->
           <div class="card" style="margin-bottom: 24px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
+            <div
+              style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
               <div class="card-title" style="font-size: 15px; color: var(--primary-color); margin:0;">
                 <i class="fa-solid fa-chart-bar"></i> Ranking de Productos Faltantes en Picking (Gráfica Horizontal)
               </div>
@@ -2168,22 +2225,26 @@
 
           <!-- Histórico y Reporte Descargable de Faltantes -->
           <div class="card">
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
+            <div
+              style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
               <div class="card-title" style="font-size: 15px; color: var(--primary-color); margin:0;">
                 <i class="fa-solid fa-list-check"></i> Reporte e Histórico de Incidencias en Picking
               </div>
               <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                <button class="btn btn-success btn-sm" onclick="exportFaltantesPickingToCSV()" style="background-color:#16a34a; color:#fff; font-weight:700; border:none; height:36px;">
+                <button class="btn btn-success btn-sm" onclick="exportFaltantesPickingToCSV()"
+                  style="background-color:#16a34a; color:#fff; font-weight:700; border:none; height:36px;">
                   <i class="fa-solid fa-file-excel"></i> Descargar Excel / CSV
                 </button>
-                <button class="btn btn-secondary btn-sm" onclick="printFaltantesPickingReport()" style="font-weight:600; height:36px;">
+                <button class="btn btn-secondary btn-sm" onclick="printFaltantesPickingReport()"
+                  style="font-weight:600; height:36px;">
                   <i class="fa-solid fa-print"></i> Imprimir Reporte PDF
                 </button>
               </div>
             </div>
 
             <!-- Filtros de búsqueda para la tabla -->
-            <div class="form-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; background: #f8fafc; padding: 12px; border-radius: var(--radius-sm);">
+            <div class="form-grid"
+              style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; background: #f8fafc; padding: 12px; border-radius: var(--radius-sm);">
               <div class="form-group" style="margin:0;">
                 <label style="font-size: 11px;">Rango de Fechas (Desde / Hasta)</label>
                 <div style="display:flex; gap:6px;">
@@ -2199,7 +2260,8 @@
               </div>
               <div class="form-group" style="margin:0;">
                 <label style="font-size: 11px;">Buscar (Picking, Código o Producto)</label>
-                <input type="text" id="filter-pk-search" class="form-control" style="font-size:12px;" placeholder="Buscar...">
+                <input type="text" id="filter-pk-search" class="form-control" style="font-size:12px;"
+                  placeholder="Buscar...">
               </div>
             </div>
 
@@ -2224,7 +2286,8 @@
               </table>
             </div>
             <div style="text-align: right; margin-top: 15px; font-weight: 700; font-size: 14px;" id="pk-total-summary">
-              Total Faltantes Registrados: <span id="pk-total-units" style="color: var(--danger-color);">0</span> unidades
+              Total Faltantes Registrados: <span id="pk-total-units" style="color: var(--danger-color);">0</span>
+              unidades
             </div>
           </div>
         </div>
@@ -2241,8 +2304,8 @@
   </div>
 
   <!-- Scripts -->
-  <script src="mockData.js?v=42"></script>
-  <script src="app.js?v=42"></script>
+  <script src="mockData.js?v=43"></script>
+  <script src="app.js?v=43"></script>
 
   <!-- Inicialización de Gráficas de Inteligencia de Negocio (Chart.js) -->
   <script>
