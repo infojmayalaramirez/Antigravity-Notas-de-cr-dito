@@ -1579,6 +1579,8 @@ async function pullFromFirebaseToSQL() {
         for (const n of toArr(fb.notas)) {
             const folNum = parseInt(n.folio || String(n.id || '').replace(/\D/g, ''), 10);
             if (!folNum || folNum <= 0) continue;
+            const cleanUid = n.uid ? String(n.uid).replace(/[%_\[\]"]/g, '').trim() : '';
+            const uidPat = cleanUid ? `%"uid":"${cleanUid}"%` : '';
             const jsonStr = JSON.stringify(n);
             const estAut = String(n.estado_autorizacion || n.estado || 'Autorizada').slice(0, 50);
             const estOp = String(n.estado_operacion || (n.estado === 'Cancelada' ? 'Cancelada' : 'Activa')).slice(0, 50);
@@ -1591,6 +1593,7 @@ async function pullFromFirebaseToSQL() {
 
             await pool.request()
                 .input('id', sql.Int, folNum)
+                .input('uidPat', sql.VarChar, uidPat)
                 .input('tipo', sql.VarChar, tipoNota)
                 .input('suc', sql.VarChar, idSuc)
                 .input('ven', sql.VarChar, idVen)
@@ -1601,7 +1604,10 @@ async function pullFromFirebaseToSQL() {
                 .input('op', sql.VarChar, estOp)
                 .input('json', sql.VarChar(sql.MAX), jsonStr)
                 .query(`
-                    IF NOT EXISTS (SELECT 1 FROM dbo.Notas WHERE id_nota=@id)
+                    IF NOT EXISTS (
+                        SELECT 1 FROM dbo.Notas
+                        WHERE id_nota=@id OR (@uidPat <> '' AND datos_json LIKE @uidPat)
+                    )
                         INSERT INTO dbo.Notas (id_nota,tipo_nota,id_sucursal,id_usuario_creador,id_cliente,id_operador,monto_total,estado,estado_autorizacion,estado_operacion,datos_json)
                         VALUES (@id,@tipo,@suc,@ven,@cli,@ope,@monto,@aut,@aut,@op,@json)
                     ELSE

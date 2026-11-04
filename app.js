@@ -427,10 +427,14 @@ async function handleFirebaseCloudAPI(apiPath, method, bodyText) {
   if (cleanPath === '/api/notas' && m === 'POST') {
     const rawFolio = parseInt(body.folio || String(body.id || '').replace(/\D/g, ''), 10);
     const maxEnNotas = store.notas.reduce((mx, n) => Math.max(mx, parseInt(n.folio || String(n.id || '').replace(/\D/g, ''), 10) || 0), 0);
-    const existingIdx = store.notas.findIndex(n =>
-      (body.uid && n.uid && n.uid === body.uid) ||
-      (rawFolio > 0 && parseInt(n.folio || String(n.id || '').replace(/\D/g, ''), 10) === rawFolio && !body.esNueva)
-    );
+    const byUidIdx = body.uid ? store.notas.findIndex(n => n && n.uid && String(n.uid) === String(body.uid)) : -1;
+    if (byUidIdx !== -1 && body.esNueva) {
+      const existingNota = store.notas[byUidIdx];
+      return makeResp({ success: true, id: existingNota.id, folio: existingNota.folio, serie: existingNota.serie, nota: existingNota, repetida: true }, 200);
+    }
+    const existingIdx = byUidIdx !== -1
+      ? byUidIdx
+      : store.notas.findIndex(n => rawFolio > 0 && parseInt(n.folio || String(n.id || '').replace(/\D/g, ''), 10) === rawFolio && !body.esNueva);
     const folioNum = existingIdx !== -1
       ? (parseInt(store.notas[existingIdx].folio, 10) || rawFolio)
       : (rawFolio > 0 && !store.notas.some(n => parseInt(n.folio, 10) === rawFolio) ? rawFolio : Math.max(maxEnNotas, store.ultimoFolioReservado || 0) + 1);
@@ -532,17 +536,19 @@ window.fetch = async function(input, init = {}) {
   const method = (init && init.method) ? init.method.toUpperCase() : 'GET';
   const bodyText = init && init.body ? init.body : null;
 
-  // Intentar primero contra SQL Server (timeout rápido de 2.5s)
+  // Intentar primero contra SQL Server (timeout de 2.5s en lecturas y 15s en escrituras para evitar abortos prematuros)
   try {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 2500);
+    const timeoutMs = method === 'GET' ? 2500 : 15000;
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     const res = await _nativeFetch(input, { ...init, signal: ctrl.signal });
     clearTimeout(timer);
     const ct = res.headers.get('content-type') || '';
     if ((res.ok || (res.status >= 400 && res.status < 500)) && ct.includes('application/json')) {
       window._lastBackendSource = 'sql';
-      // Si fue escritura exitosa en SQL Server, replicar también a Google Cloud Firebase en segundo plano
-      if (res.ok && method !== 'GET') {
+      // El servidor SQL ya replica automáticamente a Google Cloud Firebase con el folio definitivo asignado;
+      // solo replicamos desde el navegador operaciones que NO asignan folio en servidor
+      if (res.ok && method !== 'GET' && !apiPath.startsWith('/api/notas') && !apiPath.startsWith('/api/folios')) {
         handleFirebaseCloudAPI(apiPath, method, bodyText).catch(() => {});
       }
       return res;
@@ -609,11 +615,16 @@ function setPendingNotas(arr) {
   }
 }
 function queuePendingNota(nota) {
-  const arr = getPendingNotas().filter(n => String(n.id) !== String(nota.id));
+  const arr = getPendingNotas().filter(n =>
+    String(n.id) !== String(nota.id) &&
+    !(nota.uid && n.uid && String(n.uid) === String(nota.uid))
+  );
   const copy = { ...nota };
   arr.push(copy);
   setPendingNotas(arr);
 }
+
+const _inFlightNotaUids = new Set();
 
 async function sendNotaToServer(nota) {
   if (!SQL_TUNNEL_BASE) await resolveServerURL();
@@ -635,36 +646,48 @@ async function sendNotaToServer(nota) {
 }
 
 // Si el servidor reasignó el folio (colisión entre usuarios), actualizar la nota local
-function applyServerFolio(oldId, data) {
+function applyServerFolio(oldId, data, uid) {
   if (!data || !data.folio) return;
   const newId = 'N' + data.folio;
-  if (String(oldId) === newId) return;
-  const idx = notas.findIndex(n => String(n.id) === String(oldId));
+  const idx = notas.findIndex(n =>
+    (uid && n.uid && String(n.uid) === String(uid)) ||
+    String(n.id) === String(oldId)
+  );
   if (idx !== -1) {
     notas[idx].id = newId;
     notas[idx].folio = data.folio;
+    if (data.serie) notas[idx].serie = data.serie;
   }
 }
 
 let _flushingNotas = false;
 async function flushPendingNotas() {
   if (_flushingNotas) return;
-  const pend = getPendingNotas();
+  const pend = getPendingNotas().filter(n => !(n.uid && _inFlightNotaUids.has(String(n.uid))));
   if (!pend.length) return;
   _flushingNotas = true;
   const remaining = [];
   for (const n of pend) {
+    if (n.uid && _inFlightNotaUids.has(String(n.uid))) continue;
+    if (n.uid) _inFlightNotaUids.add(String(n.uid));
     try {
       const data = await sendNotaToServer(n);
-      applyServerFolio(n.id, data);
-      const local = notas.find(x => String(x.id) === String((data && data.folio) ? 'N' + data.folio : n.id));
+      applyServerFolio(n.id, data, n.uid);
+      const local = notas.find(x =>
+        (n.uid && x.uid && String(x.uid) === String(n.uid)) ||
+        String(x.id) === String((data && data.folio) ? 'N' + data.folio : n.id)
+      );
       if (local) delete local.esNueva;
     } catch (e) {
       remaining.push(n);
+    } finally {
+      if (n.uid) _inFlightNotaUids.delete(String(n.uid));
     }
   }
   // Conservar también lo que se haya encolado mientras se enviaba
-  const added = getPendingNotas().filter(p => !pend.some(o => String(o.id) === String(p.id)));
+  const added = getPendingNotas().filter(p => !pend.some(o =>
+    String(o.id) === String(p.id) || (p.uid && o.uid && String(o.uid) === String(p.uid))
+  ));
   setPendingNotas([...remaining, ...added]);
   _flushingNotas = false;
 }
@@ -672,18 +695,28 @@ async function flushPendingNotas() {
 // Función para escribir al SQL Server via túnel (guardar cambios)
 async function pushToSQLServer(entity, item) {
   if (entity === 'notas' && item) {
-    // Encolar primero: si falla el envío, la nota se reintenta automáticamente
-    queuePendingNota(item);
+    const uidKey = item.uid ? String(item.uid) : '';
+    if (uidKey && _inFlightNotaUids.has(uidKey)) {
+      return null;
+    }
+    if (uidKey) _inFlightNotaUids.add(uidKey);
     try {
       const oldId = item.id;
       const data = await sendNotaToServer(item);
-      setPendingNotas(getPendingNotas().filter(n => String(n.id) !== String(oldId)));
-      applyServerFolio(oldId, data);
+      setPendingNotas(getPendingNotas().filter(n =>
+        String(n.id) !== String(oldId) &&
+        !(uidKey && n.uid && String(n.uid) === uidKey)
+      ));
+      applyServerFolio(oldId, data, uidKey);
       delete item.esNueva;
       return data;
     } catch (e) {
+      // Solo encolar para reintento si falló el envío directo
+      queuePendingNota(item);
       console.warn('[pushToSQLServer] Nota en cola para reintento:', item.id, e.message);
       return null;
+    } finally {
+      if (uidKey) _inFlightNotaUids.delete(uidKey);
     }
   }
   if (!SQL_TUNNEL_BASE) await resolveServerURL();
@@ -3330,7 +3363,10 @@ function saveProductsToHistory(validProducts) {
   populateProductDatalists();
 }
 
+let _isSubmittingNota = false;
+
 async function submitPhysicalNote(isDraft) {
+  if (_isSubmittingNota) return;
   const validProducts = currentFisicaProducts.filter(p => p !== null);
   if (validProducts.length === 0) {
     alert("Debe registrar al menos un producto.");
@@ -3452,17 +3488,23 @@ async function submitPhysicalNote(isDraft) {
     esNueva: true
   };
 
-  notas.push(nuevaNota);
-  saveData('ca_notas', notas);
+  _isSubmittingNota = true;
   try {
-    await pushToSQLServer('notas', nuevaNota);
-  } catch(e) {
-    console.warn('[submitPhysicalNote] Error SQL:', e);
-  }
-  await fetchAPIData();
+    notas.push(nuevaNota);
+    saveData('ca_notas', notas);
+    try {
+      await pushToSQLServer('notas', nuevaNota);
+    } catch(e) {
+      console.warn('[submitPhysicalNote] Error SQL:', e);
+    }
+    await fetchAPIData();
 
-  alert(isDraft ? "Borrador guardado." : "Nota de crédito física emitida.");
-  renderNotasFisicasList();
+    alert(isDraft ? "Borrador guardado." : "Nota de crédito física emitida.");
+    resetPhysicalForm();
+    renderNotasFisicasList();
+  } finally {
+    _isSubmittingNota = false;
+  }
 }
 
 // --- 3. VIEW: NOTAS FINANCIERAS CON DESCUENTOS EN CASCADA ---
@@ -3815,6 +3857,7 @@ function validateFinancialBudgetAndClient() {
 }
 
 async function submitFinancialNote(isDraft) {
+  if (_isSubmittingNota) return;
   const subtotal = parseFloat(document.getElementById('nfi-subtotal').value) || 0;
   const total = parseFloat(document.getElementById('nfi-total-label').textContent) || 0;
   
@@ -3994,24 +4037,30 @@ async function submitFinancialNote(isDraft) {
     saveData('ca_presupuestos', presupuestos);
   }
 
-  notas.push(nuevaNota);
-  saveData('ca_notas', notas);
+  _isSubmittingNota = true;
   try {
-    await pushToSQLServer('notas', nuevaNota);
-  } catch(e) {
-    console.warn('[submitFinancialNote] Error SQL:', e);
-  }
-  await fetchAPIData();
+    notas.push(nuevaNota);
+    saveData('ca_notas', notas);
+    try {
+      await pushToSQLServer('notas', nuevaNota);
+    } catch(e) {
+      console.warn('[submitFinancialNote] Error SQL:', e);
+    }
+    await fetchAPIData();
 
-  if (isDraft) {
-    alert("Borrador guardado.");
-  } else if (esPendiente) {
-    alert("Esta nota requiere autorización de la gerencia. Se ha enviado una solicitud remota.");
-  } else {
-    alert("Nota financiera emitida.");
-  }
+    if (isDraft) {
+      alert("Borrador guardado.");
+    } else if (esPendiente) {
+      alert("Esta nota requiere autorización de la gerencia. Se ha enviado una solicitud remota.");
+    } else {
+      alert("Nota financiera emitida.");
+    }
 
-  renderNotasFinancierasList();
+    resetFinancialForm();
+    renderNotasFinancierasList();
+  } finally {
+    _isSubmittingNota = false;
+  }
 }
 
 // --- 4. DETALLE DE NOTAS Y FIRMAS ---

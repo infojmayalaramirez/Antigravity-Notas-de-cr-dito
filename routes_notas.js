@@ -60,17 +60,27 @@ module.exports = function registrarRutasNotas(app, ctx) {
             const out = await withLock(async () => {
                 const pool = await getPool();
 
-                // Idempotencia: si el cliente reintenta una nota que ya se guardó, devolver la existente
-                if (esNueva && nota.uid) {
+                // Idempotencia por UID: si el cliente reintenta una nota que ya se guardó (con o sin esNueva), usar la existente
+                let existente = null;
+                let idNum = soloDigitos(nota.folio || nota.id);
+                if (nota.uid) {
+                    const cleanUid = String(nota.uid).replace(/[%_\[\]"]/g, '');
                     const dup = await pool.request()
-                        .input('pat', sql.VarChar, '%"uid":"' + String(nota.uid).replace(/[%_\[\]"]/g, '') + '"%')
+                        .input('pat', sql.VarChar, '%"uid":"' + cleanUid + '"%')
                         .query(SQL_SELECT_NOTAS + ' WHERE datos_json LIKE @pat');
-                    if (dup.recordset.length) return { nota: rowToNota(dup.recordset[0]), repetida: true };
+                    if (dup.recordset.length) {
+                        const exNota = rowToNota(dup.recordset[0]);
+                        if (esNueva) {
+                            return { nota: exNota, repetida: true };
+                        }
+                        existente = dup.recordset[0];
+                        idNum = parseInt(existente.id_nota, 10);
+                    }
                 }
 
-                let idNum = soloDigitos(nota.folio || nota.id);
-                let existente = null;
-                if (!esNueva && Number.isFinite(idNum)) existente = await cargarNota(pool, idNum);
+                if (!existente && !esNueva && Number.isFinite(idNum)) {
+                    existente = await cargarNota(pool, idNum);
+                }
 
                 if (esNueva || !Number.isFinite(idNum)) {
                     // El servidor SIEMPRE decide el folio de una nota nueva (evita colisiones entre equipos
