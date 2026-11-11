@@ -1303,6 +1303,42 @@ app.delete('/api/faltantes-picking/:id', async (req, res) => {
     }
 });
 
+app.post('/api/faltantes-picking/reset-inventario', async (req, res) => {
+    try {
+        const pool = await getPool();
+        const b = req.body || {};
+        const fechaReset = b.fechaReset || new Date().toISOString();
+        const usuarioReset = b.usuarioNombre || 'Administrador';
+        const rowsRes = await pool.request().query(`
+            SELECT id, ISNULL(datos_json,'') AS datosJson
+            FROM dbo.FaltantesPicking
+            WHERE ISNULL(resuelto,0) = 0
+        `);
+        let updatedCount = 0;
+        for (const r of (rowsRes.recordset || [])) {
+            let parsed = {};
+            if (r.datosJson) {
+                try { parsed = JSON.parse(r.datosJson); } catch (e) {}
+            }
+            if (!parsed.reseteadoInventario) {
+                parsed.reseteadoInventario = true;
+                parsed.fechaResetInventario = fechaReset;
+                parsed.usuarioResetInventario = usuarioReset;
+                await pool.request()
+                    .input('id', sql.VarChar, r.id)
+                    .input('json', sql.VarChar(sql.MAX), JSON.stringify(parsed))
+                    .query('UPDATE dbo.FaltantesPicking SET datos_json=@json WHERE id=@id');
+                updatedCount++;
+            }
+        }
+        pushSQLToFirebase().catch(() => {});
+        res.json({ success: true, updatedCount, fechaReset });
+    } catch (error) {
+        console.error('[POST /api/faltantes-picking/reset-inventario] Error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // =====================================================================
 // 6.5 CONTEOS FÍSICOS DE PICKING (CONCENTRADO Y CAPTURA DE RAZONES)
 // =====================================================================
@@ -1844,6 +1880,19 @@ async function _pullFromFirebaseInternal() {
                     ELSE
                         INSERT INTO dbo.ConteosPicking (id,fecha,responsable,id_usuario,id_sucursal,observaciones,fecha_registro,eliminado,datos_json)
                         VALUES (@id,@fecha,@resp,@usr,@suc,@obs,GETDATE(),0,@json)
+                `).catch(() => {});
+        }
+
+        // 8. Sincronizar estado de reset de inventario en FaltantesPicking desde Firebase
+        for (const f of (fb.faltantes || [])) {
+            if (!f || !f.id || !f.reseteadoInventario) continue;
+            await pool.request()
+                .input('id', sql.VarChar, String(f.id))
+                .input('json', sql.VarChar(sql.MAX), JSON.stringify(f))
+                .query(`
+                    UPDATE dbo.FaltantesPicking
+                    SET datos_json=@json
+                    WHERE id=@id AND ISNULL(resuelto,0)=0
                 `).catch(() => {});
         }
     } catch (e) {

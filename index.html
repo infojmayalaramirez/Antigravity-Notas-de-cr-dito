@@ -249,7 +249,9 @@
             <div class="metric-card info" style="border-left: 4px solid var(--accent-color);">
               <div class="metric-icon"><i class="fa-solid fa-boxes-stacked"></i></div>
               <div class="metric-info">
-                <div class="metric-value" id="dash-total-fisicas">0 <span style="font-size: 17px; color: var(--danger-color); font-weight: 800; margin-left: 6px;">($0.00)</span></div>
+                <div class="metric-value" id="dash-total-fisicas">0 <span
+                    style="font-size: 17px; color: var(--danger-color); font-weight: 800; margin-left: 6px;">($0.00)</span>
+                </div>
                 <div class="metric-label">Total Físicas (Notas y Monto $)</div>
               </div>
             </div>
@@ -2178,8 +2180,8 @@
                     required>
                 </div>
                 <div class="form-group">
-                  <label>Cantidad Faltante (Unidades / Cajas) <span style="color:red;">*</span></label>
-                  <input type="number" id="pk-cantidad" class="form-control" min="1" step="1" placeholder="Ej. 5"
+                  <label id="label-pk-cantidad">Cantidad Faltante (Piezas / Cajas o Kilos en Rollo/Bolsa) <span style="color:red;">*</span></label>
+                  <input type="number" id="pk-cantidad" class="form-control" min="0.01" step="any" placeholder="Ej. 5 (o Kilos si es Rollo/Bolsa)"
                     required>
                 </div>
                 <div class="form-group">
@@ -2190,18 +2192,33 @@
                 </div>
               </div>
 
+              <!-- Aviso en vivo de Kilos (Rollo/Bolsa) y Stop de 5 Incidencias -->
+              <div id="pk-stop-alert-banner" class="hidden" style="margin-top: 12px; padding: 10px 14px; border-radius: 6px; font-size: 12.5px; font-weight: 600;"></div>
+
               <div class="form-group" style="margin-top: 12px;">
                 <label>Observaciones / Causa de Faltante</label>
                 <input type="text" id="pk-observaciones" class="form-control"
                   placeholder="Ej. Sin existencias en pasillo principal al momento de surtir">
               </div>
 
-              <div style="margin-top: 18px; text-align: right;">
-                <button type="submit" class="btn btn-primary" style="height: 42px; padding: 0 24px; font-weight: 700;">
+              <div style="margin-top: 18px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+                <div>
+                  <button type="button" id="btn-pk-reset-inventario-general" class="btn btn-danger hidden"
+                    onclick="resetIncidenciasPickingInventarioGeneral()"
+                    style="background-color: #dc2626; color: #fff; font-weight: 800; height: 42px; padding: 0 20px; border: 2px solid #991b1b; box-shadow: 0 2px 6px rgba(220,38,38,0.35);">
+                    <i class="fa-solid fa-rotate"></i> 🛑 Reset de Incidencias por Inventario General (Solo Admin)
+                  </button>
+                </div>
+                <button type="submit" id="btn-submit-faltante-picking" class="btn btn-primary" style="height: 42px; padding: 0 24px; font-weight: 700;">
                   <i class="fa-solid fa-plus-circle"></i> Registrar Faltante en Picking
                 </button>
               </div>
             </form>
+
+            <!-- Panel de Productos con Stop 5/5 ("Enterado que están botando") -->
+            <div id="pk-botando-status-panel" class="hidden" style="margin-top: 16px; padding: 12px 14px; background: #fef2f2; border: 1px solid #fecaca; border-left: 5px solid #dc2626; border-radius: 6px;">
+              <!-- Dinámico -->
+            </div>
           </div>
 
           <!-- Gráfica de Barras Horizontal de Productos Faltantes -->
@@ -2297,10 +2314,13 @@
               style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
               <div>
                 <div class="card-title" style="font-size: 15px; color: var(--primary-color); margin:0;">
-                  <i class="fa-solid fa-clipboard-check"></i> Concentrado de Productos para Conteo Físico y Captura de Lo Sucedido
+                  <i class="fa-solid fa-clipboard-check"></i> Concentrado de Productos para Conteo Físico y Captura de
+                  Lo Sucedido
                 </div>
                 <p style="font-size: 12px; color: var(--text-muted); margin: 4px 0 0 0;">
-                  Concentrado agrupado por producto (según los filtros activos arriba). Imprime el formato de conteo aparte para ir a bodega, captura aquí el conteo físico, la fecha, las razones encontradas y lo sucedido, y guarda e imprime el conteo.
+                  Concentrado agrupado por producto (según los filtros activos arriba). Imprime el formato de conteo
+                  aparte para ir a bodega, captura aquí el conteo físico, la fecha, las razones encontradas y lo
+                  sucedido, y guarda e imprime el conteo.
                 </p>
               </div>
               <div style="display:flex; gap:8px; flex-wrap:wrap;">
@@ -2331,12 +2351,14 @@
                 <input type="date" id="pk-conteo-fecha" class="form-control" style="font-size:12px;">
               </div>
               <div class="form-group" style="margin:0;">
-                <label style="font-size: 11px; font-weight: 700; color: #0369a1;">Responsable de Conteo / Auditoría</label>
+                <label style="font-size: 11px; font-weight: 700; color: #0369a1;">Responsable de Conteo /
+                  Auditoría</label>
                 <input type="text" id="pk-conteo-responsable" class="form-control" style="font-size:12px;"
                   placeholder="Nombre de quien realizó el conteo">
               </div>
               <div class="form-group" style="margin:0;">
-                <label style="font-size: 11px; font-weight: 700; color: #0369a1;">Observaciones Generales / Resumen de lo Sucedido</label>
+                <label style="font-size: 11px; font-weight: 700; color: #0369a1;">Observaciones Generales / Resumen de
+                  lo Sucedido</label>
                 <input type="text" id="pk-conteo-notas-gral" class="form-control" style="font-size:12px;"
                   placeholder="Ej. Conteo físico en almacén general tras corte de pickings">
               </div>
@@ -2360,12 +2382,15 @@
                 </tbody>
               </table>
             </div>
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; margin-top: 12px; font-size: 13px; font-weight: 700;">
+            <div
+              style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; margin-top: 12px; font-size: 13px; font-weight: 700;">
               <div style="color: var(--text-muted);">
-                Productos Únicos en Concentrado: <span id="pk-concentrado-total-prods" style="color: var(--primary-color);">0</span>
+                Productos Únicos en Concentrado: <span id="pk-concentrado-total-prods"
+                  style="color: var(--primary-color);">0</span>
               </div>
               <div>
-                Total Unidades Faltantes en Concentrado: <span id="pk-concentrado-total-units" style="color: var(--danger-color);">0</span> unidades
+                Total Unidades Faltantes en Concentrado: <span id="pk-concentrado-total-units"
+                  style="color: var(--danger-color);">0</span> unidades
               </div>
             </div>
           </div>
@@ -2375,7 +2400,8 @@
             <div
               style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
               <div class="card-title" style="font-size: 15px; color: var(--primary-color); margin:0;">
-                <i class="fa-solid fa-clock-rotate-left"></i> Historial de Conteos Físicos Guardados y Razones Encontradas
+                <i class="fa-solid fa-clock-rotate-left"></i> Historial de Conteos Físicos Guardados y Razones
+                Encontradas
               </div>
             </div>
             <div class="table-container">
@@ -2412,8 +2438,8 @@
   </div>
 
   <!-- Scripts -->
-  <script src="mockData.js?v=49"></script>
-  <script src="app.js?v=49"></script>
+  <script src="mockData.js?v=50"></script>
+  <script src="app.js?v=50"></script>
 
   <!-- Inicialización de Gráficas de Inteligencia de Negocio (Chart.js) -->
   <script>

@@ -416,6 +416,27 @@ async function handleFirebaseCloudAPI(apiPath, method, bodyText) {
     await saveStoreToFirebase(store);
     return makeResp({ success: true, id: obj.id }, 200);
   }
+  if (cleanPath === '/api/faltantes-picking/reset-inventario' && m === 'POST') {
+    const fechaReset = (body && body.fechaReset) || new Date().toISOString();
+    const usuarioReset = (body && body.usuarioNombre) || 'Administrador';
+    let updatedCount = 0;
+    if (Array.isArray(store.faltantes)) {
+      store.faltantes = store.faltantes.map(f => {
+        if (f && !f.eliminado && !f.reseteadoInventario) {
+          updatedCount++;
+          return {
+            ...f,
+            reseteadoInventario: true,
+            fechaResetInventario: fechaReset,
+            usuarioResetInventario: usuarioReset
+          };
+        }
+        return f;
+      });
+    }
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true, updatedCount, fechaReset }, 200);
+  }
   if (cleanPath.startsWith('/api/faltantes-picking/') && m === 'DELETE') {
     const fId = decodeURIComponent(cleanPath.replace('/api/faltantes-picking/', '')).trim();
     store.faltantes = store.faltantes.filter(f => String(f.id) !== fId);
@@ -7791,6 +7812,203 @@ function printReturnsStatisticsBriefForSignatures() {
 // --- 12. VIEW: MÓDULO FALTANTES EN PICKINGS (ANTES DE SURTIR) ---
 let instanceChartFaltantesHorizontal = null;
 let currentPkChartPeriod = 'mes';
+const MAX_INCIDENCIAS_PICKING_STOP = 5;
+
+// Determina si un producto es "rollo" y/o "bolsa" (se mide en Kilos y se promedia al contar, no se suma)
+function isPickingProductKiloPromedio(descripcion) {
+  const norm = String(descripcion || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  return norm.includes('rollo') || norm.includes('bolsa');
+}
+
+// Cuenta cuántas incidencias activas (sin eliminar y sin reset de inventario general) lleva un producto
+function getActiveCyclePickingCountForProduct(codigo, descripcion) {
+  const codNorm = String(codigo || '').trim().toUpperCase();
+  const descNorm = String(descripcion || '').trim().toUpperCase();
+  if (!codNorm && !descNorm) return 0;
+  return (faltantesPicking || []).filter(f => {
+    if (!f || f.eliminado || f.reseteadoInventario) return false;
+    const fCod = String(f.codigoInterno || '').trim().toUpperCase();
+    const fDesc = String(f.descripcion || '').trim().toUpperCase();
+    if (codNorm && fCod) return fCod === codNorm;
+    return descNorm && fDesc === descNorm;
+  }).length;
+}
+
+function updatePickingFormLiveStatus() {
+  const inputCodigo = document.getElementById('pk-codigo');
+  const inputDesc = document.getElementById('pk-descripcion');
+  const banner = document.getElementById('pk-stop-alert-banner');
+  const labelCant = document.getElementById('label-pk-cantidad');
+  const submitBtn = document.getElementById('btn-submit-faltante-picking');
+  if (!banner) return;
+
+  const codigo = (inputCodigo ? inputCodigo.value : '').trim().toUpperCase();
+  const descripcion = (inputDesc ? inputDesc.value : '').trim();
+
+  if (!codigo && !descripcion) {
+    banner.classList.add('hidden');
+    banner.innerHTML = '';
+    if (labelCant) labelCant.innerHTML = `Cantidad Faltante (Piezas / Cajas o Kilos en Rollo/Bolsa) <span style="color:red;">*</span>`;
+    if (submitBtn) submitBtn.disabled = false;
+    return;
+  }
+
+  const esKilo = isPickingProductKiloPromedio(descripcion);
+  const countActive = getActiveCyclePickingCountForProduct(codigo, descripcion);
+
+  if (labelCant) {
+    labelCant.innerHTML = esKilo
+      ? `Cantidad Faltante en <strong>KILOS (kg)</strong> — Producto Rollo/Bolsa (Se promedia al contar) <span style="color:red;">*</span>`
+      : `Cantidad Faltante en <strong>PIEZAS / CAJAS</strong> <span style="color:red;">*</span>`;
+  }
+
+  banner.classList.remove('hidden');
+  if (countActive >= MAX_INCIDENCIAS_PICKING_STOP) {
+    banner.style.background = '#fef2f2';
+    banner.style.border = '2px solid #dc2626';
+    banner.style.color = '#991b1b';
+    banner.innerHTML = `
+      🛑 <strong>STOP POR REPETICIÓN DE INCIDENCIAS (${countActive}/${MAX_INCIDENCIAS_PICKING_STOP}):</strong>
+      El producto <strong>${escapeHtmlAttr(codigo || descripcion)}</strong> ya alcanzó <strong>5 incidencias seguidas</strong>.
+      Se da por <strong>"ENTERADO QUE ESTÁ BOTANDO"</strong> y no hay necesidad de seguir poniéndolo hasta que el Administrador realice el <strong>Reset de Inventario General</strong>.
+      ${esKilo ? `<div style="margin-top:4px; color:#0369a1;">⚖️ Nota: Este producto contiene "Rollo/Bolsa", por lo que se maneja en <strong>KILOS (kg)</strong> y se <strong>PROMEDIA</strong> al contar.</div>` : ''}
+    `;
+    if (submitBtn) submitBtn.disabled = true;
+  } else {
+    if (submitBtn) submitBtn.disabled = false;
+    if (esKilo || countActive > 0) {
+      banner.style.background = esKilo ? '#f0f9ff' : '#fffbeb';
+      banner.style.border = esKilo ? '1px solid #0284c7' : '1px solid #f59e0b';
+      banner.style.color = esKilo ? '#0369a1' : '#92400e';
+      banner.innerHTML = `
+        ${esKilo ? `<div>⚖️ <strong>PRODUCTO EN KILOS (Rollo / Bolsa):</strong> La cantidad capturada se considera en <strong>Kilos (kg)</strong> y al contar en el concentrado <strong>se promedia</strong> (no se suma).</div>` : ''}
+        <div>📊 <strong>Incidencias acumuladas en el inventario actual:</strong> <strong>${countActive} de ${MAX_INCIDENCIAS_PICKING_STOP}</strong> ${countActive === 4 ? '<span style="color:#dc2626; font-weight:800;">(¡Atención! Con esta 5ª incidencia se activará el STOP de "Enterado que está botando")</span>' : ''}</div>
+      `;
+    } else {
+      banner.classList.add('hidden');
+      banner.innerHTML = '';
+    }
+  }
+}
+
+function renderPickingBotandoStatusPanel() {
+  const btnReset = document.getElementById('btn-pk-reset-inventario-general');
+  if (btnReset) {
+    if (currentUser && currentUser.rol === 'Administrador') {
+      btnReset.classList.remove('hidden');
+    } else {
+      btnReset.classList.add('hidden');
+    }
+  }
+
+  const panel = document.getElementById('pk-botando-status-panel');
+  if (!panel) return;
+
+  // Agrupar incidencias activas por producto (no eliminadas y no reseteadas por inventario general)
+  const countsMap = new Map();
+  let lastResetDate = null;
+  let lastResetUser = null;
+
+  (faltantesPicking || []).forEach(f => {
+    if (!f || f.eliminado) return;
+    if (f.reseteadoInventario && f.fechaResetInventario) {
+      if (!lastResetDate || f.fechaResetInventario > lastResetDate) {
+        lastResetDate = f.fechaResetInventario;
+        lastResetUser = f.usuarioResetInventario || 'Administrador';
+      }
+      return;
+    }
+    const cod = String(f.codigoInterno || '').trim().toUpperCase();
+    const desc = String(f.descripcion || '').trim();
+    const key = cod || desc.toUpperCase();
+    if (!key) return;
+    if (!countsMap.has(key)) {
+      countsMap.set(key, { codigo: cod || 'S/C', descripcion: desc, count: 0 });
+    }
+    countsMap.get(key).count += 1;
+  });
+
+  const botandoList = Array.from(countsMap.values()).filter(p => p.count >= MAX_INCIDENCIAS_PICKING_STOP);
+  const porBotarList = Array.from(countsMap.values()).filter(p => p.count >= 3 && p.count < MAX_INCIDENCIAS_PICKING_STOP);
+
+  if (botandoList.length === 0 && porBotarList.length === 0 && !lastResetDate) {
+    panel.classList.add('hidden');
+    panel.innerHTML = '';
+    return;
+  }
+
+  panel.classList.remove('hidden');
+  panel.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+      <div style="font-size:13px; font-weight:800; color:#991b1b;">
+        <i class="fa-solid fa-hand"></i> Control de Repetición de Incidencias (Stop a las 5 Incidencias Seguidas — "Enterado que están botando")
+      </div>
+      ${lastResetDate ? `<div style="font-size:11px; color:#475569; background:#fff; padding:3px 8px; border-radius:4px; border:1px solid #cbd5e1;">Último Reset de Inventario General: <strong>${escapeHtmlAttr(lastResetDate.substring(0, 10))}</strong> (${escapeHtmlAttr(lastResetUser)})</div>` : ''}
+    </div>
+    ${botandoList.length > 0 ? `
+      <div style="margin-top:8px; font-size:12px; color:#7f1d1d;">
+        <strong>🛑 Productos en STOP (5/5 — Enterado que están botando, bloqueados hasta el Inventario General):</strong>
+        <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;">
+          ${botandoList.map(p => `<span style="background:#dc2626; color:#fff; padding:4px 10px; border-radius:999px; font-size:11.5px; font-weight:700;">🛑 ${escapeHtmlAttr(p.codigo)} - ${escapeHtmlAttr(p.descripcion)} (${p.count}/5 BOTANDO)</span>`).join('')}
+        </div>
+      </div>
+    ` : `<div style="margin-top:6px; font-size:12px; color:#15803d; font-weight:600;">✅ Ningún producto se encuentra bloqueado en STOP (5/5) en el ciclo de inventario actual.</div>`}
+    ${porBotarList.length > 0 ? `
+      <div style="margin-top:8px; font-size:11.5px; color:#92400e;">
+        <strong>⚠️ Próximos a llegar a 5 incidencias:</strong>
+        ${porBotarList.map(p => `<span style="background:#fef3c7; color:#92400e; border:1px solid #f59e0b; padding:2px 8px; border-radius:999px; margin-left:4px; font-weight:700;">${escapeHtmlAttr(p.codigo)} (${p.count}/5)</span>`).join('')}
+      </div>
+    ` : ''}
+  `;
+}
+
+// Botón Rojo de Reset de Incidencias por Inventario General (SOLO ADMINISTRADOR)
+window.resetIncidenciasPickingInventarioGeneral = async function() {
+  if (!currentUser || currentUser.rol !== 'Administrador') {
+    alert('⛔ Acceso denegado: Solamente el Administrador puede ejecutar el Reset de Incidencias por Inventario General.');
+    return;
+  }
+
+  const activosCount = (faltantesPicking || []).filter(f => f && !f.eliminado && !f.reseteadoInventario).length;
+  if (!confirm(`🛑 RESET DE INCIDENCIAS POR INVENTARIO GENERAL (SOLO ADMINISTRADOR)\n\n¿Confirmas que se realizó el Inventario General y deseas RESETEAR el contador de repetición de incidencias (Stop 5/5 de productos "botando")?\n\n• Se reiniciarán los contadores de ${activosCount} incidencia(s) activa(s) a 0/5.\n• Todos los productos podrán volver a capturarse nuevamente.\n• El historial y reportes anteriores se conservan intactos.`)) {
+    return;
+  }
+
+  const fechaReset = new Date().toISOString();
+  const usuarioNombre = currentUser.nombre || 'Administrador';
+
+  faltantesPicking = (faltantesPicking || []).map(f => {
+    if (f && !f.eliminado && !f.reseteadoInventario) {
+      return {
+        ...f,
+        reseteadoInventario: true,
+        fechaResetInventario: fechaReset,
+        usuarioResetInventario: usuarioNombre
+      };
+    }
+    return f;
+  });
+
+  saveData('ca_faltantes_picking', faltantesPicking);
+  updatePickingFormLiveStatus();
+  renderFaltantesPickingView();
+
+  try {
+    if (!SQL_TUNNEL_BASE) await resolveServerURL();
+    await fetch(`${SQL_TUNNEL_BASE}/api/faltantes-picking/reset-inventario`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fechaReset, usuarioNombre })
+    });
+  } catch (err) {
+    console.warn('[resetIncidenciasPickingInventarioGeneral] Aviso sincronizando API:', err);
+  }
+
+  alert('✅ Reset por Inventario General aplicado correctamente. Todos los contadores de repetición de incidencias (5/5) han quedado en 0.');
+};
 
 function setupFaltantesPickingView() {
   const form = document.getElementById('form-faltante-picking');
@@ -7801,17 +8019,22 @@ function setupFaltantesPickingView() {
   refreshAllModuleDropdowns();
   populatePickingProductDatalist();
 
-  // Autocompletado dinámico de descripción al escribir/seleccionar código
+  // Autocompletado dinámico de descripción al escribir/seleccionar código y verificación de Kilos / Stop 5/5
   const inputCodigo = document.getElementById('pk-codigo');
   const inputDesc = document.getElementById('pk-descripcion');
   if (inputCodigo && inputDesc) {
     inputCodigo.addEventListener('input', (e) => {
       const val = e.target.value.trim().toUpperCase();
-      if (!val) return;
-      const match = productosMasterPicking.find(p => String(p.codigoInterno).trim().toUpperCase() === val);
-      if (match && match.descripcion) {
-        inputDesc.value = match.descripcion;
+      if (val) {
+        const match = productosMasterPicking.find(p => String(p.codigoInterno).trim().toUpperCase() === val);
+        if (match && match.descripcion) {
+          inputDesc.value = match.descripcion;
+        }
       }
+      updatePickingFormLiveStatus();
+    });
+    inputDesc.addEventListener('input', () => {
+      updatePickingFormLiveStatus();
     });
   }
 
@@ -7830,12 +8053,22 @@ function setupFaltantesPickingView() {
     const clienteId = document.getElementById('pk-cliente').value;
     const codigo = document.getElementById('pk-codigo').value.trim().toUpperCase();
     const descripcion = document.getElementById('pk-descripcion').value.trim();
-    const cantidad = parseInt(document.getElementById('pk-cantidad').value) || 0;
+    const rawCant = parseFloat(document.getElementById('pk-cantidad').value) || 0;
+    const esKilo = isPickingProductKiloPromedio(descripcion);
+    const cantidad = esKilo ? (Math.round(rawCant * 100) / 100) : (parseInt(rawCant, 10) || 0);
     const sucursalId = document.getElementById('pk-sucursal').value;
     const observaciones = document.getElementById('pk-observaciones').value.trim();
 
     if (!numPicking || !clienteId || !codigo || !descripcion || cantidad <= 0 || !sucursalId) {
       alert("Por favor completa todos los campos requeridos con datos válidos.");
+      return;
+    }
+
+    // STOP POR REPETICIÓN DE INCIDENCIAS (5 incidencias seguidas -> "Enterado que están botando")
+    const incidenciasActivas = getActiveCyclePickingCountForProduct(codigo, descripcion);
+    if (incidenciasActivas >= MAX_INCIDENCIAS_PICKING_STOP) {
+      alert(`🛑 STOP — PRODUCTO "BOTANDO" (${incidenciasActivas}/${MAX_INCIDENCIAS_PICKING_STOP} incidencias):\n\nEl producto "${codigo} - ${descripcion}" ya tiene 5 incidencias seguidas registradas.\nSe da por ENTERADO que está "botando" y no hay necesidad de seguir poniéndolo.\n\nSolo se podrá volver a capturar cuando el Administrador realice el Reset por Inventario General (botón rojo).`);
+      updatePickingFormLiveStatus();
       return;
     }
 
@@ -7852,6 +8085,7 @@ function setupFaltantesPickingView() {
       if (currentUser.sucursalId) {
         document.getElementById('pk-sucursal').value = currentUser.sucursalId;
       }
+      updatePickingFormLiveStatus();
       renderFaltantesPickingView();
       return;
     }
@@ -7873,6 +8107,7 @@ function setupFaltantesPickingView() {
       codigoInterno: codigo,
       descripcion: descripcion,
       cantidad: cantidad,
+      unidadMedida: esKilo ? 'kg' : 'pzas',
       sucursalId: sucursalId,
       sucursalNombre: sucNombre,
       observaciones: observaciones,
@@ -7904,6 +8139,7 @@ function setupFaltantesPickingView() {
       if (currentUser.sucursalId) {
         document.getElementById('pk-sucursal').value = currentUser.sucursalId;
       }
+      updatePickingFormLiveStatus();
       populatePickingProductDatalist();
       renderFaltantesPickingView();
 
@@ -7920,11 +8156,18 @@ function setupFaltantesPickingView() {
         window._pendingPickingItem = null;
       }
 
-      alert(`Faltante en Picking ${numPicking} registrado con éxito (${cantidad} unidades de ${codigo}).`);
+      const nuevoTotalIncidencias = incidenciasActivas + 1;
+      const unidadTxt = esKilo ? 'kg' : 'unidades';
+      if (nuevoTotalIncidencias >= MAX_INCIDENCIAS_PICKING_STOP) {
+        alert(`✅ Faltante en Picking ${numPicking} registrado (${cantidad} ${unidadTxt} de ${codigo}).\n\n🛑 5ª INCIDENCIA ALCANZADA (5/5) — SE DA POR "ENTERADO QUE ESTÁ BOTANDO":\nA partir de este momento no hay necesidad de seguir poniendo este producto hasta que el Administrador realice el Reset en el Inventario General.`);
+      } else {
+        alert(`Faltante en Picking ${numPicking} registrado con éxito (${cantidad} ${unidadTxt} de ${codigo} — Incidencia ${nuevoTotalIncidencias}/5).`);
+      }
       renderFaltantesPickingView();
     } finally {
       _isSubmittingPicking = false;
       if (submitBtn) submitBtn.disabled = false;
+      updatePickingFormLiveStatus();
     }
   });
 
@@ -7972,6 +8215,8 @@ function renderFaltantesPickingView() {
     selectSuc.value = currentUser.sucursalId;
   }
 
+  renderPickingBotandoStatusPanel();
+  updatePickingFormLiveStatus();
   renderFaltantesPickingTable();
   renderFaltantesPickingHorizontalChart(currentPkChartPeriod);
 }
@@ -7980,6 +8225,7 @@ function renderFaltantesPickingTable() {
   const tbody = document.querySelector('#table-faltantes-picking-results tbody');
   if (!tbody) return;
   tbody.innerHTML = '';
+  renderPickingBotandoStatusPanel();
 
   const fInicio = document.getElementById('filter-pk-fecha-inicio')?.value || '';
   const fFin = document.getElementById('filter-pk-fecha-fin')?.value || '';
@@ -8021,7 +8267,10 @@ function renderFaltantesPickingTable() {
   let totalUnidades = 0;
 
   filtrados.forEach(item => {
-    const cant = parseInt(item.cantidad) || 0;
+    const cant = parseFloat(item.cantidad) || 0;
+    const esKilo = isPickingProductKiloPromedio(item.descripcion);
+    const incCount = getActiveCyclePickingCountForProduct(item.codigoInterno, item.descripcion);
+    const isBotando = !item.reseteadoInventario && incCount >= MAX_INCIDENCIAS_PICKING_STOP;
     totalUnidades += cant;
     const tr = document.createElement('tr');
     tr.innerHTML = `
@@ -8029,8 +8278,15 @@ function renderFaltantesPickingTable() {
       <td><strong>${item.numPicking || 'N/A'}</strong></td>
       <td>${item.clienteNombre || 'N/A'}</td>
       <td><span class="badge badge-secondary" style="font-family:monospace;">${item.codigoInterno || ''}</span></td>
-      <td><strong>${item.descripcion || ''}</strong></td>
-      <td style="text-align: center; color: var(--danger-color); font-size: 14px; font-weight: 700;">${cant}</td>
+      <td>
+        <strong>${item.descripcion || ''}</strong>
+        ${esKilo ? `<span class="badge" style="background:#e0f2fe; color:#0369a1; font-size:10px; margin-left:4px;">⚖️ Kilos (Promedia)</span>` : ''}
+        ${isBotando ? `<span class="badge" style="background:#dc2626; color:#fff; font-size:10px; margin-left:4px;">🛑 BOTANDO (${incCount}/5 - Enterado)</span>` : ''}
+        ${item.reseteadoInventario ? `<span class="badge" style="background:#f1f5f9; color:#64748b; font-size:10px; margin-left:4px;"> Inv. Anterior</span>` : ''}
+      </td>
+      <td style="text-align: center; color: var(--danger-color); font-size: 14px; font-weight: 700;">
+        ${cant} <span style="font-size:11px; font-weight:600; color:#475569;">${esKilo ? 'kg' : 'pzas'}</span>
+      </td>
       <td>${item.sucursalNombre || 'N/A'}</td>
       <td>${item.usuarioNombre || 'Usuario'} (${item.usuarioRol || 'Rol'})</td>
       <td style="text-align: center;">
@@ -8041,7 +8297,7 @@ function renderFaltantesPickingTable() {
   });
 
   const totalEl = document.getElementById('pk-total-units');
-  if (totalEl) totalEl.textContent = totalUnidades.toLocaleString('es-MX');
+  if (totalEl) totalEl.textContent = (Math.round(totalUnidades * 100) / 100).toLocaleString('es-MX');
 
   if (typeof renderPickingConcentradoTable === 'function') renderPickingConcentradoTable();
   if (typeof renderPickingHistorialConteos === 'function') renderPickingHistorialConteos();
@@ -8075,15 +8331,28 @@ function renderFaltantesPickingHorizontalChart(period = 'mes') {
     return true; // 'todo'
   });
 
-  // Agrupar por producto (Código - Descripción)
+  // Agrupar por producto (Código - Descripción); para Rollo/Bolsa se promedia en Kilos
   const productTotals = {};
   filtrados.forEach(item => {
-    const key = `${item.codigoInterno} - ${item.descripcion}`;
-    const qty = parseInt(item.cantidad) || 0;
+    const cod = String(item.codigoInterno || '').trim().toUpperCase();
+    const desc = String(item.descripcion || '').trim();
+    const esKilo = isPickingProductKiloPromedio(desc);
+    const key = cod || desc;
+    const qty = parseFloat(item.cantidad) || 0;
     if (!productTotals[key]) {
-      productTotals[key] = { label: key, cantidad: 0 };
+      productTotals[key] = {
+        label: `${cod} - ${desc}${esKilo ? ' (kg Prom.)' : ''}`,
+        suma: 0,
+        count: 0,
+        esKilo,
+        cantidad: 0
+      };
     }
-    productTotals[key].cantidad += qty;
+    productTotals[key].suma += qty;
+    productTotals[key].count += 1;
+    productTotals[key].cantidad = productTotals[key].esKilo
+      ? Math.round((productTotals[key].suma / productTotals[key].count) * 100) / 100
+      : productTotals[key].suma;
   });
 
   let sorted = Object.values(productTotals).sort((a, b) => b.cantidad - a.cantidad).slice(0, 10);
@@ -8107,7 +8376,7 @@ function renderFaltantesPickingHorizontalChart(period = 'mes') {
     data: {
       labels: labels,
       datasets: [{
-        label: 'Unidades Faltantes en Picking',
+        label: 'Faltantes en Picking (Piezas o Kilos Promedio en Rollo/Bolsa)',
         data: dataValues,
         backgroundColor: 'rgba(220, 38, 38, 0.85)',
         borderColor: 'rgba(185, 28, 28, 1)',
@@ -8124,7 +8393,11 @@ function renderFaltantesPickingHorizontalChart(period = 'mes') {
         tooltip: {
           callbacks: {
             label: function (context) {
-              return ` ${context.raw} unidades faltantes en picking`;
+              const itemObj = sorted[context.dataIndex];
+              if (itemObj && itemObj.esKilo) {
+                return ` ${context.raw} kg (Promedio de ${itemObj.count} incidencia(s))`;
+              }
+              return ` ${context.raw} piezas faltantes en picking`;
             }
           }
         }
@@ -8319,16 +8592,23 @@ function getPickingConcentradoItems(customSource) {
     const key = rawCode || ('DESC:' + rawDesc.toUpperCase());
     if (!key) return;
 
-    const cant = parseInt(item.cantidad, 10) || 0;
+    const cant = parseFloat(item.cantidad) || 0;
     if (!map.has(key)) {
       const masterMatch = rawCode
         ? (productosMasterPicking || []).find(p => String(p.codigoInterno || '').trim().toUpperCase() === rawCode)
         : null;
+      const resolvedDesc = (masterMatch && masterMatch.descripcion) ? masterMatch.descripcion : (rawDesc || 'Sin descripción');
+      const esKilo = isPickingProductKiloPromedio(resolvedDesc);
       map.set(key, {
         key,
         codigoInterno: rawCode || 'S/C',
-        descripcion: (masterMatch && masterMatch.descripcion) ? masterMatch.descripcion : (rawDesc || 'Sin descripción'),
+        descripcion: resolvedDesc,
+        esKiloPromedio: esKilo,
+        unidadMedida: esKilo ? 'kg' : 'pzas',
+        sumaCantidades: 0,
+        numIncidencias: 0,
         cantidadTotalFaltante: 0,
+        incidenciasCicloActivo: getActiveCyclePickingCountForProduct(rawCode, resolvedDesc),
         pickings: [],
         clientes: [],
         sucursales: [],
@@ -8337,10 +8617,20 @@ function getPickingConcentradoItems(customSource) {
       });
     }
     const entry = map.get(key);
-    entry.cantidadTotalFaltante += cant;
+    entry.sumaCantidades += cant;
+    entry.numIncidencias += 1;
     if (rawDesc && (!entry.descripcion || entry.descripcion === 'Sin descripción')) {
       entry.descripcion = rawDesc;
+      entry.esKiloPromedio = isPickingProductKiloPromedio(rawDesc);
+      entry.unidadMedida = entry.esKiloPromedio ? 'kg' : 'pzas';
     }
+    // Productos con "rollo" y/o "bolsa" son KILOS y SE PROMEDIAN al contar (no se suman)
+    if (entry.esKiloPromedio) {
+      entry.cantidadTotalFaltante = Math.round((entry.sumaCantidades / entry.numIncidencias) * 100) / 100;
+    } else {
+      entry.cantidadTotalFaltante = Math.round(entry.sumaCantidades * 100) / 100;
+    }
+
     const pkNum = String(item.numPicking || '').trim();
     if (pkNum && !entry.pickings.includes(pkNum)) entry.pickings.push(pkNum);
     const cliNom = String(item.clienteNombre || '').trim();
@@ -8389,11 +8679,11 @@ function renderPickingConcentradoTable(forceRebuild = false) {
   const totalProdsEl = document.getElementById('pk-concentrado-total-prods');
   const totalUnitsEl = document.getElementById('pk-concentrado-total-units');
 
-  const totalUnidades = concentrado.reduce((acc, c) => acc + (c.cantidadTotalFaltante || 0), 0);
+  const totalUnidades = Math.round(concentrado.reduce((acc, c) => acc + (c.cantidadTotalFaltante || 0), 0) * 100) / 100;
   if (totalProdsEl) totalProdsEl.textContent = concentrado.length.toLocaleString('es-MX');
   if (totalUnitsEl) totalUnitsEl.textContent = totalUnidades.toLocaleString('es-MX');
 
-  const newSig = concentrado.map(c => `${c.key}:${c.cantidadTotalFaltante}:${c.pickings.join(',')}`).join('|');
+  const newSig = concentrado.map(c => `${c.key}:${c.cantidadTotalFaltante}:${c.incidenciasCicloActivo}:${c.pickings.join(',')}`).join('|');
 
   // Si el usuario está escribiendo dentro de la tabla de captura y los productos concentrados no cambiaron, no reconstruir el DOM
   const activeEl = document.activeElement;
@@ -8422,11 +8712,15 @@ function renderPickingConcentradoTable(forceRebuild = false) {
       ...RAZONES_CONTEO_PICKING.map(r => `<option value="${escapeHtmlAttr(r)}" ${draft.razon === r ? 'selected' : ''}>${escapeHtmlAttr(r)}</option>`)
     ].join('');
 
+    const isBotando = (item.incidenciasCicloActivo || 0) >= MAX_INCIDENCIAS_PICKING_STOP;
+
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><span class="badge badge-secondary" style="font-family:monospace; font-size:12px;">${escapeHtmlAttr(item.codigoInterno)}</span></td>
       <td>
         <strong>${escapeHtmlAttr(item.descripcion)}</strong>
+        ${item.esKiloPromedio ? `<span class="badge" style="background:#e0f2fe; color:#0369a1; font-size:10px; margin-left:4px;">⚖️ KILOS (Se promedia)</span>` : ''}
+        ${isBotando ? `<span class="badge" style="background:#dc2626; color:#fff; font-size:10px; margin-left:4px;">🛑 BOTANDO (${item.incidenciasCicloActivo}/5 - Enterado)</span>` : ''}
         ${item.clientes.length > 0 ? `<div style="font-size:11px; color:var(--text-muted);">Clientes: ${escapeHtmlAttr(item.clientes.join(', '))}</div>` : ''}
       </td>
       <td style="text-align:center;">
@@ -8436,11 +8730,12 @@ function renderPickingConcentradoTable(forceRebuild = false) {
         </div>
       </td>
       <td style="text-align:center; color:var(--danger-color); font-size:15px; font-weight:800;">
-        ${item.cantidadTotalFaltante}
+        ${item.cantidadTotalFaltante} <span style="font-size:11px; font-weight:700; color:${item.esKiloPromedio ? '#0369a1' : '#475569'};">${item.esKiloPromedio ? 'kg (Prom.)' : 'pzas'}</span>
+        ${item.esKiloPromedio && item.numIncidencias > 1 ? `<div style="font-size:10px; color:#0369a1; font-weight:600;">Prom. de ${item.numIncidencias} inc.</div>` : ''}
       </td>
       <td style="text-align:center;">
         <input type="number" class="form-control pk-input-conteo-fisico" data-key="${safeKey}" step="any" min="0"
-          placeholder="Cant. contada" value="${escapeHtmlAttr(draft.conteoFisico)}"
+          placeholder="${item.esKiloPromedio ? 'Kilos (kg)' : 'Piezas'}" value="${escapeHtmlAttr(draft.conteoFisico)}"
           style="font-size:13px; font-weight:700; text-align:center; height:34px;"
           oninput="updateDraftConteoPicking(this.getAttribute('data-key'), 'conteoFisico', this.value)">
       </td>
@@ -8501,7 +8796,7 @@ window.printPickingConcentradoParaContar = function() {
     <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #0284c7; padding-bottom:10px; margin-bottom:14px;">
       <div>
         <h2 style="margin:0; font-size:17px; color:#0f172a;">CASA AYALA - CONCENTRADO DE PRODUCTOS PARA CONTEO FÍSICO EN BODEGA</h2>
-        <div style="font-size:11px; color:#334155; font-weight:600;">Formato de Verificación Física de Faltantes en Pickings (Para Ir a Contar)</div>
+        <div style="font-size:11px; color:#334155; font-weight:600;">Formato de Verificación Física de Faltantes en Pickings (Para Ir a Contar — Productos en Rollo/Bolsa expresados en Kilos Promedio)</div>
       </div>
       <div style="text-align:right; font-size:11px;">
         <div><strong>Fecha de Conteo:</strong> ${escapeHtmlAttr(fechaConteo)}</div>
@@ -8517,7 +8812,7 @@ window.printPickingConcentradoParaContar = function() {
           <th style="padding:6px; border:1px solid #000; text-align:left; width:85px;">Código</th>
           <th style="padding:6px; border:1px solid #000; text-align:left;">Descripción del Producto</th>
           <th style="padding:6px; border:1px solid #000; text-align:left; width:130px;">Pickings Afectados</th>
-          <th style="padding:6px; border:1px solid #000; text-align:center; width:75px;">Total Faltante</th>
+          <th style="padding:6px; border:1px solid #000; text-align:center; width:85px;">Faltante (Pzas / Kg Prom.)</th>
           <th style="padding:6px; border:1px solid #000; text-align:center; width:95px;">Conteo Físico Bodega</th>
           <th style="padding:6px; border:1px solid #000; text-align:center; width:75px;">Diferencia</th>
           <th style="padding:6px; border:1px solid #000; text-align:left; width:220px;">Razón Encontrada / Lo Sucedido en Pasillo</th>
@@ -8526,19 +8821,22 @@ window.printPickingConcentradoParaContar = function() {
       <tbody>
         ${concentrado.map((item, idx) => {
           totalUnidades += item.cantidadTotalFaltante;
+          const isBotando = (item.incidenciasCicloActivo || 0) >= MAX_INCIDENCIAS_PICKING_STOP;
           return `
             <tr style="border:1px solid #000; page-break-inside:avoid;">
               <td style="padding:8px 5px; border:1px solid #000; text-align:center; font-weight:bold;">${idx + 1}</td>
               <td style="padding:8px 5px; border:1px solid #000; font-family:monospace; font-weight:bold; font-size:11px;">${escapeHtmlAttr(item.codigoInterno)}</td>
               <td style="padding:8px 5px; border:1px solid #000;">
                 <strong>${escapeHtmlAttr(item.descripcion)}</strong>
+                ${item.esKiloPromedio ? `<div style="font-size:9px; color:#0369a1; font-weight:bold;">[KILOS - PROMEDIO DE ${item.numIncidencias} INCIDENCIA(S)]</div>` : ''}
+                ${isBotando ? `<div style="font-size:9px; color:#dc2626; font-weight:bold;">[STOP 5/5: ENTERADO QUE ESTÁ BOTANDO]</div>` : ''}
                 ${item.sucursales.length ? `<div style="font-size:9px; color:#475569;">Suc: ${escapeHtmlAttr(item.sucursales.join(', '))}</div>` : ''}
               </td>
               <td style="padding:8px 5px; border:1px solid #000; font-size:9.5px;">
                 <strong>(${item.pickings.length})</strong> ${escapeHtmlAttr(item.pickings.join(', '))}
               </td>
-              <td style="padding:8px 5px; border:1px solid #000; text-align:center; font-weight:bold; font-size:12px; color:#dc2626;">
-                ${item.cantidadTotalFaltante}
+              <td style="padding:8px 5px; border:1px solid #000; text-align:center; font-weight:bold; font-size:11.5px; color:#dc2626;">
+                ${item.cantidadTotalFaltante} ${item.esKiloPromedio ? 'kg (Prom.)' : 'pzas'}
               </td>
               <td style="padding:8px 5px; border:1px solid #000; background:#fafafa;"></td>
               <td style="padding:8px 5px; border:1px solid #000; background:#fafafa;"></td>
@@ -8551,7 +8849,7 @@ window.printPickingConcentradoParaContar = function() {
 
     <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; font-weight:bold; margin-bottom:18px; padding:8px 12px; border:1px solid #000; background:#f8fafc;">
       <div>TOTAL PRODUCTOS DISTINTOS A CONTAR: ${concentrado.length}</div>
-      <div>TOTAL UNIDADES FALTANTES REPORTADAS: <span style="color:#dc2626;">${totalUnidades.toLocaleString('es-MX')}</span></div>
+      <div>TOTAL FALTANTE CONCENTRADO (PZAS / KG PROM.): <span style="color:#dc2626;">${(Math.round(totalUnidades * 100) / 100).toLocaleString('es-MX')}</span></div>
     </div>
 
     <div style="border:1px solid #000; padding:10px; margin-bottom:28px; min-height:55px; font-size:10.5px;">
@@ -8599,11 +8897,14 @@ function buildCurrentPickingConteoObject() {
     const draft = (window._draftConteoPicking && window._draftConteoPicking[item.key]) || {};
     const rawFisico = draft.conteoFisico !== undefined && draft.conteoFisico !== '' ? parseFloat(draft.conteoFisico) : null;
     const conteoFisico = (rawFisico !== null && !isNaN(rawFisico)) ? rawFisico : null;
-    const diferencia = conteoFisico !== null ? (conteoFisico - item.cantidadTotalFaltante) : null;
+    const diferencia = conteoFisico !== null ? Math.round((conteoFisico - item.cantidadTotalFaltante) * 100) / 100 : null;
     return {
       key: item.key,
       codigoInterno: item.codigoInterno,
       descripcion: item.descripcion,
+      esKiloPromedio: item.esKiloPromedio,
+      unidadMedida: item.unidadMedida || (item.esKiloPromedio ? 'kg' : 'pzas'),
+      numIncidencias: item.numIncidencias || 1,
       pickings: item.pickings,
       clientes: item.clientes,
       sucursales: item.sucursales,
@@ -8615,7 +8916,7 @@ function buildCurrentPickingConteoObject() {
     };
   });
 
-  const totalUnidadesFaltantes = productosContados.reduce((acc, p) => acc + (p.cantidadTotalFaltante || 0), 0);
+  const totalUnidadesFaltantes = Math.round(productosContados.reduce((acc, p) => acc + (p.cantidadTotalFaltante || 0), 0) * 100) / 100;
 
   return {
     fecha: fechaConteo,
@@ -8715,7 +9016,7 @@ function printPickingConteoObject(conteoObj) {
     <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #800000; padding-bottom:10px; margin-bottom:14px;">
       <div>
         <h2 style="margin:0; font-size:17px; color:#800000;">CASA AYALA - REPORTE DE CONTEO FÍSICO Y RAZONES ENCONTRADAS EN PICKING</h2>
-        <div style="font-size:11px; color:#334155; font-weight:600;">Resultado de Auditoría de Faltantes, Captura de lo Sucedido y Causas</div>
+        <div style="font-size:11px; color:#334155; font-weight:600;">Resultado de Auditoría de Faltantes, Captura de lo Sucedido y Causas (Rollo/Bolsa en Kilos Promedio)</div>
       </div>
       <div style="text-align:right; font-size:11px;">
         <div><strong>Folio Conteo:</strong> ${escapeHtmlAttr(conteoObj.folioConteo || conteoObj.id || 'ACTUAL')}</div>
@@ -8738,15 +9039,16 @@ function printPickingConteoObject(conteoObj) {
           <th style="padding:6px; border:1px solid #000; text-align:left; width:78px;">Código</th>
           <th style="padding:6px; border:1px solid #000; text-align:left;">Descripción Producto</th>
           <th style="padding:6px; border:1px solid #000; text-align:left; width:110px;">Pickings</th>
-          <th style="padding:6px; border:1px solid #000; text-align:center; width:68px;">Faltante Rep.</th>
-          <th style="padding:6px; border:1px solid #000; text-align:center; width:68px;">Conteo Físico</th>
+          <th style="padding:6px; border:1px solid #000; text-align:center; width:78px;">Faltante Rep.</th>
+          <th style="padding:6px; border:1px solid #000; text-align:center; width:78px;">Conteo Físico</th>
           <th style="padding:6px; border:1px solid #000; text-align:left; width:155px;">Razón Encontrada</th>
           <th style="padding:6px; border:1px solid #000; text-align:left;">Captura de lo Sucedido / Hallazgo</th>
         </tr>
       </thead>
       <tbody>
         ${conteoObj.productos.map((p, idx) => {
-          const falt = parseInt(p.cantidadTotalFaltante, 10) || 0;
+          const falt = parseFloat(p.cantidadTotalFaltante) || 0;
+          const esKilo = p.esKiloPromedio !== undefined ? p.esKiloPromedio : isPickingProductKiloPromedio(p.descripcion);
           totalFaltante += falt;
           const tieneFisico = p.conteoFisico !== null && p.conteoFisico !== undefined && p.conteoFisico !== '';
           if (tieneFisico) totalContado += (parseFloat(p.conteoFisico) || 0);
@@ -8754,11 +9056,14 @@ function printPickingConteoObject(conteoObj) {
             <tr style="border:1px solid #cbd5e1; page-break-inside:avoid;">
               <td style="padding:6px 5px; border:1px solid #cbd5e1; text-align:center;">${idx + 1}</td>
               <td style="padding:6px 5px; border:1px solid #cbd5e1; font-family:monospace; font-weight:bold;">${escapeHtmlAttr(p.codigoInterno)}</td>
-              <td style="padding:6px 5px; border:1px solid #cbd5e1;"><strong>${escapeHtmlAttr(p.descripcion)}</strong></td>
+              <td style="padding:6px 5px; border:1px solid #cbd5e1;">
+                <strong>${escapeHtmlAttr(p.descripcion)}</strong>
+                ${esKilo ? `<span style="font-size:8.5px; color:#0369a1; font-weight:bold;"> [KG PROM.]</span>` : ''}
+              </td>
               <td style="padding:6px 5px; border:1px solid #cbd5e1; font-size:9px;">${escapeHtmlAttr((p.pickings || []).join(', '))}</td>
-              <td style="padding:6px 5px; border:1px solid #cbd5e1; text-align:center; font-weight:bold; color:#dc2626;">${falt}</td>
+              <td style="padding:6px 5px; border:1px solid #cbd5e1; text-align:center; font-weight:bold; color:#dc2626;">${falt} ${esKilo ? 'kg (Prom.)' : 'pzas'}</td>
               <td style="padding:6px 5px; border:1px solid #cbd5e1; text-align:center; font-weight:bold; color:#0f172a;">
-                ${tieneFisico ? p.conteoFisico : 'S/C'}
+                ${tieneFisico ? `${p.conteoFisico} ${esKilo ? 'kg' : 'pzas'}` : 'S/C'}
               </td>
               <td style="padding:6px 5px; border:1px solid #cbd5e1; font-weight:600;">
                 ${escapeHtmlAttr(p.razon || 'Sin especificar')}
@@ -8774,8 +9079,8 @@ function printPickingConteoObject(conteoObj) {
 
     <div style="display:flex; justify-content:space-between; align-items:center; font-size:11.5px; font-weight:bold; margin-bottom:26px; padding:8px 12px; border:1px solid #000; background:#f8fafc;">
       <div>PRODUCTOS AUDITADOS: ${conteoObj.productos.length}</div>
-      <div>TOTAL UNIDADES FALTANTES REPORTADAS: <span style="color:#dc2626;">${totalFaltante.toLocaleString('es-MX')}</span></div>
-      <div>TOTAL EXISTENCIA FÍSICA CONTADA: <span style="color:#0284c7;">${totalContado.toLocaleString('es-MX')}</span></div>
+      <div>TOTAL FALTANTES REPORTADOS (PZAS / KG PROM.): <span style="color:#dc2626;">${(Math.round(totalFaltante * 100) / 100).toLocaleString('es-MX')}</span></div>
+      <div>TOTAL EXISTENCIA FÍSICA CONTADA: <span style="color:#0284c7;">${(Math.round(totalContado * 100) / 100).toLocaleString('es-MX')}</span></div>
     </div>
 
     <div style="margin-top:35px; page-break-inside:avoid;">
