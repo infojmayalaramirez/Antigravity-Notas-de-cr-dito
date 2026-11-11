@@ -1590,6 +1590,7 @@ async function pushSQLToFirebase() {
     if (_isSyncingFirebase) return;
     _isSyncingFirebase = true;
     try {
+        await _pullFromFirebaseInternal();
         const localData = await httpGetJson(`http://127.0.0.1:${PORT}/api/catalogos/all`, false);
         if (localData && typeof localData === 'object') {
             await httpsPutFirebase(localData);
@@ -1624,6 +1625,16 @@ app.use((req, res, next) => {
 async function pullFromFirebaseToSQL() {
     if (_isSyncingFirebase) return;
     _isSyncingFirebase = true;
+    try {
+        await _pullFromFirebaseInternal();
+    } catch (e) {
+        console.warn('[Firebase Pull] Aviso:', e.message);
+    } finally {
+        _isSyncingFirebase = false;
+    }
+}
+
+async function _pullFromFirebaseInternal() {
     try {
         const fb = await httpGetJson(FIREBASE_STORE_URL, true);
         if (!fb || typeof fb !== 'object') return;
@@ -1720,11 +1731,10 @@ async function pullFromFirebaseToSQL() {
 
         // 3. Notas de crédito creadas o firmadas/canceladas en la nube mientras la laptop estuvo apagada
         for (const n of toArr(fb.notas)) {
-            const folNum = parseInt(n.folio || String(n.id || '').replace(/\D/g, ''), 10);
+            let folNum = parseInt(n.folio || String(n.id || '').replace(/\D/g, ''), 10);
             if (!folNum || folNum <= 0) continue;
             const cleanUid = n.uid ? String(n.uid).replace(/[%_\[\]"]/g, '').trim() : '';
             const uidPat = cleanUid ? `%"uid":"${cleanUid}"%` : '';
-            const jsonStr = JSON.stringify(n);
             const estAut = String(n.estado_autorizacion || (n.estado && n.estado !== 'Cancelada' ? n.estado : 'Autorizada')).slice(0, 50);
             const estOp = String(n.estado_operacion || (n.estado === 'Cancelada' ? 'Cancelada' : 'Activa')).slice(0, 50);
             const tipoNota = String(n.tipo_nota || (String(n.tipo || '').toLowerCase().includes('finan') ? 'Financiera' : 'Física')).slice(0, 50);
@@ -1737,9 +1747,34 @@ async function pullFromFirebaseToSQL() {
             const fechaEm = String(n.fechaEmision || n.fecha_emision || new Date().toISOString().substring(0, 10)).substring(0, 10);
             const monto = parseFloat(n.total || n.monto_total || n.importeDescuento || 0) || 0;
 
-            await pool.request()
+            // Verificar si existe por UID o por Folio y si hay colisión de folio con otro cliente distinto
+            const checkRes = await pool.request()
                 .input('id', sql.Int, folNum)
                 .input('uidPat', sql.VarChar, uidPat)
+                .query(`
+                    SELECT id_nota, id_cliente, monto_total,
+                           CASE WHEN @uidPat <> '' AND datos_json LIKE @uidPat THEN 1 ELSE 0 END AS same_uid
+                    FROM dbo.Notas
+                    WHERE id_nota=@id OR (@uidPat <> '' AND datos_json LIKE @uidPat)
+                `).catch(() => ({ recordset: [] }));
+
+            const rows = checkRes.recordset || [];
+            const uidRow = rows.find(r => r.same_uid === 1);
+            const idRow = rows.find(r => parseInt(r.id_nota, 10) === folNum);
+
+            if (!uidRow && idRow && (String(idRow.id_cliente || '') !== idCli || Math.abs((parseFloat(idRow.monto_total) || 0) - monto) >= 0.02)) {
+                // El folio @id ya está ocupado por otra nota distinta: asignar siguiente folio libre para no perder la nota
+                const mxRes = await pool.request().query('SELECT ISNULL(MAX(id_nota), 1000) + 1 AS next_id FROM dbo.Notas');
+                folNum = mxRes.recordset[0].next_id;
+                n.folio = String(folNum).padStart(4, '0');
+                n.id = 'N' + n.folio;
+            }
+
+            const targetId = uidRow ? parseInt(uidRow.id_nota, 10) : folNum;
+            const jsonStr = JSON.stringify(n);
+
+            await pool.request()
+                .input('id', sql.Int, targetId)
                 .input('tipo', sql.VarChar, tipoNota)
                 .input('suc', sql.VarChar, idSuc)
                 .input('ven', sql.VarChar, idVen)
@@ -1753,10 +1788,7 @@ async function pullFromFirebaseToSQL() {
                 .input('op', sql.VarChar, estOp)
                 .input('json', sql.VarChar(sql.MAX), jsonStr)
                 .query(`
-                    IF NOT EXISTS (
-                        SELECT 1 FROM dbo.Notas
-                        WHERE id_nota=@id OR (@uidPat <> '' AND datos_json LIKE @uidPat)
-                    )
+                    IF NOT EXISTS (SELECT 1 FROM dbo.Notas WHERE id_nota=@id)
                     BEGIN
                         SET IDENTITY_INSERT dbo.Notas ON;
                         INSERT INTO dbo.Notas
@@ -1775,7 +1807,7 @@ async function pullFromFirebaseToSQL() {
                             estado_autorizacion = CASE WHEN @aut IN ('Firmada','Rechazada','Autorizada') THEN @aut ELSE estado_autorizacion END,
                             datos_json = CASE WHEN @op='Cancelada' OR @aut IN ('Firmada','Rechazada') THEN @json ELSE datos_json END
                         WHERE id_nota=@id
-                `).catch((err) => console.warn('[Firebase Pull Nota]', folNum, err.message));
+                `).catch((err) => console.warn('[Firebase Pull Nota]', targetId, err.message));
         }
 
         // 4. Conteos Físicos de Picking guardados en la nube
@@ -1808,8 +1840,6 @@ async function pullFromFirebaseToSQL() {
         }
     } catch (e) {
         console.warn('[Firebase Pull] Aviso:', e.message);
-    } finally {
-        _isSyncingFirebase = false;
     }
 }
 

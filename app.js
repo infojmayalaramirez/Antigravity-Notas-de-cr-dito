@@ -86,7 +86,9 @@ let operadores = (_persistedCache && Array.isArray(_persistedCache.operadores)) 
 let vendedores = (_persistedCache && Array.isArray(_persistedCache.vendedores)) ? _persistedCache.vendedores : (typeof INITIAL_VENDEDORES !== 'undefined' ? INITIAL_VENDEDORES : []);
 let presupuestos = (_persistedCache && Array.isArray(_persistedCache.presupuestos)) ? _persistedCache.presupuestos : (typeof INITIAL_PRESUPUESTOS !== 'undefined' ? INITIAL_PRESUPUESTOS : []);
 let proveedores = (_persistedCache && Array.isArray(_persistedCache.proveedores)) ? _persistedCache.proveedores : (typeof INITIAL_PROVEEDORES !== 'undefined' ? INITIAL_PROVEEDORES : []);
-let notas = (_persistedCache && Array.isArray(_persistedCache.notas)) ? _persistedCache.notas : (typeof INITIAL_NOTAS !== 'undefined' ? INITIAL_NOTAS : []);
+const _bootCaNotas = loadData('ca_notas', []);
+const _bootMasterNotas = (_persistedCache && Array.isArray(_persistedCache.notas)) ? _persistedCache.notas : [];
+let notas = _bootMasterNotas.length > 0 ? _bootMasterNotas : (_bootCaNotas.length > 0 ? _bootCaNotas : (typeof INITIAL_NOTAS !== 'undefined' ? INITIAL_NOTAS : []));
 let faltantesPicking = (_persistedCache && Array.isArray(_persistedCache.faltantesPicking)) ? _persistedCache.faltantesPicking : [];
 let conteosPicking = (_persistedCache && Array.isArray(_persistedCache.conteosPicking)) ? _persistedCache.conteosPicking : loadData('ca_conteos_picking', []);
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
@@ -1148,6 +1150,61 @@ async function fetchAPIData() {
       getPendingNotas().forEach(p => {
         if (!notas.some(n => String(n.id) === String(p.id) || (p.uid && n.uid === p.uid))) notas.push(p);
       });
+
+      // Rescate automático de notas guardadas en localStorage (ca_notas / ca_master_cache) de cualquier dispositivo
+      // que no hayan llegado aún al servidor o a Firebase
+      try {
+        window._rescuedLocalNotasKeys = window._rescuedLocalNotasKeys || new Set();
+        const currentCaNotas = loadData('ca_notas', []);
+        const candidatesMap = new Map();
+        [...(Array.isArray(_bootCaNotas) ? _bootCaNotas : []), ...(Array.isArray(_bootMasterNotas) ? _bootMasterNotas : []), ...(Array.isArray(currentCaNotas) ? currentCaNotas : [])].forEach(c => {
+          if (!c || (!c.id && !c.folio)) return;
+          const folNum = parseInt(c.folio || String(c.id || '').replace(/\D/g, ''), 10) || 0;
+          const fEm = String(c.fechaEmision || c.fecha_emision || '').substring(0, 10);
+          if (folNum < 1040 && fEm < '2026-11-07') return;
+          const monto = parseFloat(c.total || c.monto_total || c.importeDescuento || 0) || 0;
+          if (monto <= 0) return;
+          const key = c.uid ? String(c.uid) : `${c.clienteId || c.id_cliente || ''}_${c.factura || ''}_${monto.toFixed(2)}_${fEm}_${folNum}`;
+          if (!candidatesMap.has(key)) candidatesMap.set(key, c);
+        });
+
+        candidatesMap.forEach((loc, rescueKey) => {
+          const locCli = String(loc.clienteId || loc.id_cliente || '');
+          const locMonto = parseFloat(loc.total || loc.monto_total || loc.importeDescuento || 0) || 0;
+          const locFact = String(loc.factura || '').trim();
+          const locFecha = String(loc.fechaEmision || loc.fecha_emision || '').substring(0, 10);
+          const locFol = parseInt(loc.folio || String(loc.id || '').replace(/\D/g, ''), 10) || 0;
+
+          const existsInServer = notas.some(srv => {
+            if (loc.uid && srv.uid && String(loc.uid) === String(srv.uid)) return true;
+            const srvCli = String(srv.clienteId || srv.id_cliente || '');
+            const srvMonto = parseFloat(srv.total || srv.monto_total || srv.importeDescuento || 0) || 0;
+            const srvFact = String(srv.factura || '').trim();
+            const srvFecha = String(srv.fechaEmision || srv.fecha_emision || '').substring(0, 10);
+            if (srvCli && locCli && srvCli === locCli && Math.abs(srvMonto - locMonto) < 0.02) {
+              if (locFact && srvFact && locFact === srvFact) return true;
+              if (!locFact && srvFecha === locFecha) return true;
+            }
+            return false;
+          });
+
+          if (!existsInServer) {
+            const folioCollision = locFol > 0 && notas.some(srv => parseInt(srv.folio, 10) === locFol);
+            const locCopy = { ...loc, esNueva: folioCollision };
+            notas.unshift(locCopy);
+            if (!window._rescuedLocalNotasKeys.has(rescueKey)) {
+              window._rescuedLocalNotasKeys.add(rescueKey);
+              console.log('[Rescate Automático] Subiendo nota local faltante al servidor:', locCopy.id, locCli, locMonto);
+              pushToSQLServer('notas', locCopy).catch(() => {
+                window._rescuedLocalNotasKeys.delete(rescueKey);
+              });
+            }
+          }
+        });
+        saveData('ca_notas', notas);
+      } catch (rescueErr) {
+        console.warn('[Rescate Automático] Aviso:', rescueErr);
+      }
     }
     if (Array.isArray(sqlData.presupuestos)) {
       presupuestos = sqlData.presupuestos.map(p => ({
