@@ -8097,6 +8097,9 @@ function setupFaltantesPickingView() {
 
     const fechaHoy = new Date().toISOString().split('T')[0];
 
+    const nuevoTotalIncidencias = incidenciasActivas + 1;
+    const llegaAlStopQuinta = nuevoTotalIncidencias >= MAX_INCIDENCIAS_PICKING_STOP;
+
     const nuevoFaltante = {
       id: 'FP-' + Date.now(),
       numPicking: numPicking,
@@ -8108,9 +8111,13 @@ function setupFaltantesPickingView() {
       descripcion: descripcion,
       cantidad: cantidad,
       unidadMedida: esKilo ? 'kg' : 'pzas',
+      numIncidenciaCiclo: nuevoTotalIncidencias,
+      bloqueadoBotando: llegaAlStopQuinta,
       sucursalId: sucursalId,
       sucursalNombre: sucNombre,
-      observaciones: observaciones,
+      observaciones: llegaAlStopQuinta
+        ? (observaciones ? `${observaciones} | [STOP 5/5: ENTERADO QUE ESTÁ BOTANDO]` : '[STOP 5/5: ENTERADO QUE ESTÁ BOTANDO]')
+        : observaciones,
       usuarioId: currentUser.id,
       usuarioNombre: currentUser.nombre,
       usuarioRol: currentUser.rol
@@ -8125,6 +8132,19 @@ function setupFaltantesPickingView() {
       window._pendingPickingItem = nuevoFaltante;
       faltantesPicking.unshift(nuevoFaltante);
       saveData('ca_faltantes_picking', faltantesPicking);
+
+      // Si alcanzó la 5ª incidencia, guardar de inmediato el bloqueo en el borrador del Concentrado
+      if (llegaAlStopQuinta && typeof window.updateDraftConteoPicking === 'function') {
+        const draftKey = codigo || ('DESC:' + descripcion.toUpperCase());
+        const existingDraft = (window._draftConteoPicking && window._draftConteoPicking[draftKey]) || {};
+        window.updateDraftConteoPicking(
+          draftKey,
+          'loSucedido',
+          existingDraft.loSucedido
+            ? `${existingDraft.loSucedido} | 🛑 STOP 5/5: Enterado que está botando (${fechaHoy})`
+            : `🛑 STOP 5/5: Enterado que está botando (${fechaHoy})`
+        );
+      }
 
       // 2. Guardar/Actualizar catálogo máster de productos reutilizables
       const masterIdx = productosMasterPicking.findIndex(p => String(p.codigoInterno).trim().toUpperCase() === codigo);
@@ -8156,10 +8176,9 @@ function setupFaltantesPickingView() {
         window._pendingPickingItem = null;
       }
 
-      const nuevoTotalIncidencias = incidenciasActivas + 1;
       const unidadTxt = esKilo ? 'kg' : 'unidades';
-      if (nuevoTotalIncidencias >= MAX_INCIDENCIAS_PICKING_STOP) {
-        alert(`✅ Faltante en Picking ${numPicking} registrado (${cantidad} ${unidadTxt} de ${codigo}).\n\n🛑 5ª INCIDENCIA ALCANZADA (5/5) — SE DA POR "ENTERADO QUE ESTÁ BOTANDO":\nA partir de este momento no hay necesidad de seguir poniendo este producto hasta que el Administrador realice el Reset en el Inventario General.`);
+      if (llegaAlStopQuinta) {
+        alert(`✅ 5ª INCIDENCIA GUARDADA Y PRODUCTO BLOQUEADO (${cantidad} ${unidadTxt} de ${codigo}).\n\n🛑 SE DA POR "ENTERADO QUE ESTÁ BOTANDO" (5/5):\nLa incidencia ya quedó guardada y el producto ha quedado BLOQUEADO automáticamente en el módulo de Picking hasta que el Administrador realice el Reset en el Inventario General.`);
       } else {
         alert(`Faltante en Picking ${numPicking} registrado con éxito (${cantidad} ${unidadTxt} de ${codigo} — Incidencia ${nuevoTotalIncidencias}/5).`);
       }
