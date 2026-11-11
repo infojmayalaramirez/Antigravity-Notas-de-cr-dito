@@ -548,7 +548,7 @@ async function ensureDatabaseSchema() {
                 ALTER TABLE dbo.Presupuestos ALTER COLUMN mes_anio VARCHAR(20) NULL;
         `);
 
-        // 6. Tabla FaltantesPicking en SQL Server (antes era array en memoria — se reiniciaba al cerrar el servidor)
+        // 6. Tabla FaltantesPicking y ConteosPicking en SQL Server
         await pool.request().query(`
             IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name='FaltantesPicking')
                 CREATE TABLE dbo.FaltantesPicking (
@@ -560,6 +560,18 @@ async function ensureDatabaseSchema() {
                     id_sucursal VARCHAR(50) NULL,
                     fecha_registro DATETIME DEFAULT GETDATE(),
                     resuelto BIT DEFAULT 0,
+                    datos_json VARCHAR(MAX) NULL
+                );
+            IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name='ConteosPicking')
+                CREATE TABLE dbo.ConteosPicking (
+                    id VARCHAR(100) PRIMARY KEY,
+                    fecha VARCHAR(50) NULL,
+                    responsable VARCHAR(255) NULL,
+                    id_usuario VARCHAR(50) NULL,
+                    id_sucursal VARCHAR(50) NULL,
+                    observaciones VARCHAR(500) NULL,
+                    fecha_registro DATETIME DEFAULT GETDATE(),
+                    eliminado BIT DEFAULT 0,
                     datos_json VARCHAR(MAX) NULL
                 );
         `);
@@ -1292,6 +1304,92 @@ app.delete('/api/faltantes-picking/:id', async (req, res) => {
 });
 
 // =====================================================================
+// 6.5 CONTEOS FÍSICOS DE PICKING (CONCENTRADO Y CAPTURA DE RAZONES)
+// =====================================================================
+app.get('/api/conteos-picking', async (req, res) => {
+    try {
+        const pool = await getPool();
+        const result = await pool.request().query(`
+            SELECT id, ISNULL(fecha,'') AS fecha, ISNULL(responsable,'') AS responsable,
+                   ISNULL(id_usuario,'') AS idUsuario, ISNULL(id_sucursal,'S01') AS sucursalId,
+                   ISNULL(observaciones,'') AS observaciones,
+                   CONVERT(VARCHAR(23),fecha_registro,126) AS fechaRegistro,
+                   ISNULL(datos_json,'{}') AS datosJson
+            FROM dbo.ConteosPicking
+            WHERE ISNULL(eliminado,0)=0
+            ORDER BY fecha_registro DESC
+        `);
+        const rows = result.recordset.map(r => {
+            let extra = {};
+            try { extra = JSON.parse(r.datosJson || '{}'); } catch (e) {}
+            return {
+                ...extra,
+                id: r.id,
+                fecha: r.fecha || extra.fecha,
+                responsable: r.responsable || extra.responsable,
+                idUsuario: r.idUsuario || extra.idUsuario,
+                sucursalId: r.sucursalId || extra.sucursalId,
+                observaciones: r.observaciones || extra.observaciones,
+                fechaRegistro: extra.fechaRegistro || r.fechaRegistro
+            };
+        });
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/conteos-picking', async (req, res) => {
+    try {
+        const item = req.body;
+        if (!item || !item.id) return res.status(400).json({ error: 'id es requerido' });
+
+        const cId = String(item.id).trim().slice(0, 100);
+        const cFecha = String(item.fecha || '').trim().slice(0, 50);
+        const cResp = String(item.responsable || item.usuarioNombre || '').trim().slice(0, 255);
+        const cUsr = String(item.idUsuario || item.usuarioId || '').trim().slice(0, 50);
+        const cSuc = String(item.sucursalId || 'S01').trim().slice(0, 50);
+        const cObs = String(item.observaciones || item.notasGenerales || '').trim().slice(0, 500);
+        const cJson = JSON.stringify(item);
+
+        const pool = await getPool();
+        await pool.request()
+            .input('id', sql.VarChar, cId)
+            .input('fecha', sql.VarChar, cFecha)
+            .input('resp', sql.VarChar, cResp)
+            .input('usr', sql.VarChar, cUsr)
+            .input('suc', sql.VarChar, cSuc)
+            .input('obs', sql.VarChar, cObs)
+            .input('json', sql.VarChar(sql.MAX), cJson)
+            .query(`
+                IF EXISTS (SELECT 1 FROM dbo.ConteosPicking WHERE id=@id)
+                    UPDATE dbo.ConteosPicking
+                    SET fecha=@fecha, responsable=@resp, id_usuario=@usr, id_sucursal=@suc,
+                        observaciones=@obs, datos_json=@json, eliminado=0
+                    WHERE id=@id
+                ELSE
+                    INSERT INTO dbo.ConteosPicking (id,fecha,responsable,id_usuario,id_sucursal,observaciones,fecha_registro,eliminado,datos_json)
+                    VALUES (@id,@fecha,@resp,@usr,@suc,@obs,GETDATE(),0,@json)
+            `);
+        res.json({ success: true, id: cId });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/conteos-picking/:id', async (req, res) => {
+    try {
+        const pool = await getPool();
+        await pool.request()
+            .input('id', sql.VarChar, req.params.id)
+            .query('UPDATE dbo.ConteosPicking SET eliminado=1 WHERE id=@id');
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// =====================================================================
 // 7. LOGIN — autenticación contra SQL Server
 // =====================================================================
 app.post('/api/login', async (req, res) => {
@@ -1632,6 +1730,35 @@ async function pullFromFirebaseToSQL() {
                             estado_autorizacion = CASE WHEN @aut IN ('Firmada','Rechazada') THEN @aut ELSE estado_autorizacion END,
                             datos_json = CASE WHEN @op='Cancelada' OR @aut IN ('Firmada','Rechazada') THEN @json ELSE datos_json END
                         WHERE id_nota=@id
+                `).catch(() => {});
+        }
+
+        // 4. Conteos Físicos de Picking guardados en la nube
+        for (const c of toArr(fb.conteosPicking)) {
+            if (!c || !c.id || c.eliminado) continue;
+            const cId = String(c.id).trim().slice(0, 100);
+            const cFecha = String(c.fecha || '').trim().slice(0, 50);
+            const cResp = String(c.responsable || c.usuarioNombre || '').trim().slice(0, 255);
+            const cUsr = String(c.idUsuario || c.usuarioId || '').trim().slice(0, 50);
+            const cSuc = String(c.sucursalId || 'S01').trim().slice(0, 50);
+            const cObs = String(c.observaciones || c.notasGenerales || '').trim().slice(0, 500);
+            const cJson = JSON.stringify(c);
+            await pool.request()
+                .input('id', sql.VarChar, cId)
+                .input('fecha', sql.VarChar, cFecha)
+                .input('resp', sql.VarChar, cResp)
+                .input('usr', sql.VarChar, cUsr)
+                .input('suc', sql.VarChar, cSuc)
+                .input('obs', sql.VarChar, cObs)
+                .input('json', sql.VarChar(sql.MAX), cJson)
+                .query(`
+                    IF EXISTS (SELECT 1 FROM dbo.ConteosPicking WHERE id=@id)
+                        UPDATE dbo.ConteosPicking
+                        SET fecha=@fecha, responsable=@resp, observaciones=@obs, datos_json=@json
+                        WHERE id=@id AND ISNULL(eliminado,0)=0
+                    ELSE
+                        INSERT INTO dbo.ConteosPicking (id,fecha,responsable,id_usuario,id_sucursal,observaciones,fecha_registro,eliminado,datos_json)
+                        VALUES (@id,@fecha,@resp,@usr,@suc,@obs,GETDATE(),0,@json)
                 `).catch(() => {});
         }
     } catch (e) {

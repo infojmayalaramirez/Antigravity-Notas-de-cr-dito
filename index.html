@@ -2290,6 +2290,114 @@
               unidades
             </div>
           </div>
+
+          <!-- Concentrado de Productos para Ir a Contar y Captura de lo Sucedido / Razones -->
+          <div class="card" style="margin-top: 24px; border-left: 5px solid #0284c7;">
+            <div
+              style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
+              <div>
+                <div class="card-title" style="font-size: 15px; color: var(--primary-color); margin:0;">
+                  <i class="fa-solid fa-clipboard-check"></i> Concentrado de Productos para Conteo Físico y Captura de Lo Sucedido
+                </div>
+                <p style="font-size: 12px; color: var(--text-muted); margin: 4px 0 0 0;">
+                  Concentrado agrupado por producto (según los filtros activos arriba). Imprime el formato de conteo aparte para ir a bodega, captura aquí el conteo físico, la fecha, las razones encontradas y lo sucedido, y guarda e imprime el conteo.
+                </p>
+              </div>
+              <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="printPickingConcentradoParaContar()"
+                  style="background-color:#0284c7; color:#fff; font-weight:700; border:none; height:36px;">
+                  <i class="fa-solid fa-print"></i> Imprimir Concentrado para Ir a Contar
+                </button>
+                <button type="button" class="btn btn-primary btn-sm" onclick="savePickingConteo()"
+                  style="font-weight:700; height:36px;">
+                  <i class="fa-solid fa-floppy-disk"></i> Guardar Conteo y Razones
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="printPickingConteoActual()"
+                  style="background-color:#0f172a; color:#fff; font-weight:700; border:none; height:36px;">
+                  <i class="fa-solid fa-file-lines"></i> Imprimir Conteo Capturado
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="clearPickingConteoDraft()"
+                  style="height:36px;" title="Limpiar campos de captura actual">
+                  <i class="fa-solid fa-eraser"></i> Limpiar Captura
+                </button>
+              </div>
+            </div>
+
+            <!-- Datos generales de la captura del conteo -->
+            <div class="form-grid"
+              style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px; background: #f0f9ff; padding: 12px; border-radius: var(--radius-sm); border: 1px solid #bae6fd;">
+              <div class="form-group" style="margin:0;">
+                <label style="font-size: 11px; font-weight: 700; color: #0369a1;">Fecha del Conteo / Revisión</label>
+                <input type="date" id="pk-conteo-fecha" class="form-control" style="font-size:12px;">
+              </div>
+              <div class="form-group" style="margin:0;">
+                <label style="font-size: 11px; font-weight: 700; color: #0369a1;">Responsable de Conteo / Auditoría</label>
+                <input type="text" id="pk-conteo-responsable" class="form-control" style="font-size:12px;"
+                  placeholder="Nombre de quien realizó el conteo">
+              </div>
+              <div class="form-group" style="margin:0;">
+                <label style="font-size: 11px; font-weight: 700; color: #0369a1;">Observaciones Generales / Resumen de lo Sucedido</label>
+                <input type="text" id="pk-conteo-notas-gral" class="form-control" style="font-size:12px;"
+                  placeholder="Ej. Conteo físico en almacén general tras corte de pickings">
+              </div>
+            </div>
+
+            <div class="table-container">
+              <table class="table-modern" id="table-pk-concentrado-conteo">
+                <thead>
+                  <tr>
+                    <th>Código Interno</th>
+                    <th>Descripción Producto</th>
+                    <th style="text-align: center;">No. Pickings / Folios</th>
+                    <th style="text-align: center;">Total Faltante</th>
+                    <th style="text-align: center; width: 130px;">Conteo Físico Real</th>
+                    <th style="width: 230px;">Razón Encontrada</th>
+                    <th>Captura de lo Sucedido / Fecha y Hallazgo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <!-- Dinámico -->
+                </tbody>
+              </table>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; margin-top: 12px; font-size: 13px; font-weight: 700;">
+              <div style="color: var(--text-muted);">
+                Productos Únicos en Concentrado: <span id="pk-concentrado-total-prods" style="color: var(--primary-color);">0</span>
+              </div>
+              <div>
+                Total Unidades Faltantes en Concentrado: <span id="pk-concentrado-total-units" style="color: var(--danger-color);">0</span> unidades
+              </div>
+            </div>
+          </div>
+
+          <!-- Historial de Conteos Guardados -->
+          <div class="card" style="margin-top: 24px;">
+            <div
+              style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
+              <div class="card-title" style="font-size: 15px; color: var(--primary-color); margin:0;">
+                <i class="fa-solid fa-clock-rotate-left"></i> Historial de Conteos Físicos Guardados y Razones Encontradas
+              </div>
+            </div>
+            <div class="table-container">
+              <table class="table-modern" id="table-pk-historial-conteos">
+                <thead>
+                  <tr>
+                    <th>Folio Conteo</th>
+                    <th>Fecha Conteo</th>
+                    <th>Responsable</th>
+                    <th style="text-align: center;">Productos</th>
+                    <th style="text-align: center;">Total Faltante</th>
+                    <th>Resumen de Razones y Lo Sucedido</th>
+                    <th>Observaciones Generales</th>
+                    <th style="text-align: center;">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <!-- Dinámico -->
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
 
       </div>
@@ -2304,8 +2412,8 @@
   </div>
 
   <!-- Scripts -->
-  <script src="mockData.js?v=45"></script>
-  <script src="app.js?v=45"></script>
+  <script src="mockData.js?v=46"></script>
+  <script src="app.js?v=46"></script>
 
   <!-- Inicialización de Gráficas de Inteligencia de Negocio (Chart.js) -->
   <script>

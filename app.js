@@ -88,6 +88,7 @@ let presupuestos = (_persistedCache && Array.isArray(_persistedCache.presupuesto
 let proveedores = (_persistedCache && Array.isArray(_persistedCache.proveedores)) ? _persistedCache.proveedores : (typeof INITIAL_PROVEEDORES !== 'undefined' ? INITIAL_PROVEEDORES : []);
 let notas = (_persistedCache && Array.isArray(_persistedCache.notas)) ? _persistedCache.notas : (typeof INITIAL_NOTAS !== 'undefined' ? INITIAL_NOTAS : []);
 let faltantesPicking = (_persistedCache && Array.isArray(_persistedCache.faltantesPicking)) ? _persistedCache.faltantesPicking : [];
+let conteosPicking = (_persistedCache && Array.isArray(_persistedCache.conteosPicking)) ? _persistedCache.conteosPicking : loadData('ca_conteos_picking', []);
 let productosMasterPicking = loadData('ca_productos_picking_master', []);
 
 // --- SINCRONIZACIÓN HÍBRIDA 24/7: SQL SERVER + GOOGLE CLOUD FIREBASE ---
@@ -140,6 +141,7 @@ function normalizeFirebaseStore(fbData) {
     presupuestos: toArr(d.presupuestos),
     notas: toArr(d.notas),
     faltantes: toArr(d.faltantes || d.faltantesPicking),
+    conteosPicking: toArr(d.conteosPicking),
     ultimoFolioReservado: Number(d.ultimoFolioReservado) || 0,
     updatedAt: d.updatedAt || new Date().toISOString()
   };
@@ -191,7 +193,7 @@ async function handleFirebaseCloudAPI(apiPath, method, bodyText) {
 
   const store = (await fetchStoreFromFirebase()) || normalizeFirebaseStore({
     usuarios, sucursales, clientes, operadores, vendedores, proveedores, presupuestos, notas,
-    faltantes: faltantesPicking, ultimoFolioReservado: window.ultimoFolioReservado || 0
+    faltantes: faltantesPicking, conteosPicking, ultimoFolioReservado: window.ultimoFolioReservado || 0
   });
 
   const cleanPath = apiPath.split('?')[0];
@@ -415,6 +417,29 @@ async function handleFirebaseCloudAPI(apiPath, method, bodyText) {
   if (cleanPath.startsWith('/api/faltantes-picking/') && m === 'DELETE') {
     const fId = decodeURIComponent(cleanPath.replace('/api/faltantes-picking/', '')).trim();
     store.faltantes = store.faltantes.filter(f => String(f.id) !== fId);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true }, 200);
+  }
+
+  // 10.5 Conteos Físicos de Picking (Concentrado y Captura de Razones)
+  if (cleanPath === '/api/conteos-picking' && m === 'GET') {
+    return makeResp(store.conteosPicking || [], 200);
+  }
+  if (cleanPath === '/api/conteos-picking' && m === 'POST') {
+    const cId = String(body.id || ('CNT-' + Date.now())).trim();
+    if (!Array.isArray(store.conteosPicking)) store.conteosPicking = [];
+    const idx = store.conteosPicking.findIndex(c => String(c.id) === cId);
+    const obj = { ...body, id: cId };
+    if (idx !== -1) store.conteosPicking[idx] = obj;
+    else store.conteosPicking.unshift(obj);
+    await saveStoreToFirebase(store);
+    return makeResp({ success: true, id: cId }, 200);
+  }
+  if (cleanPath.startsWith('/api/conteos-picking/') && m === 'DELETE') {
+    const cId = decodeURIComponent(cleanPath.replace('/api/conteos-picking/', '')).trim();
+    if (Array.isArray(store.conteosPicking)) {
+      store.conteosPicking = store.conteosPicking.filter(c => String(c.id) !== cId);
+    }
     await saveStoreToFirebase(store);
     return makeResp({ success: true }, 200);
   }
@@ -805,6 +830,7 @@ async function pushToCloudStorage() {
     proveedores: proveedores || [],
     presupuestos: presupuestos || [],
     faltantes: faltantesPicking || [],
+    conteosPicking: conteosPicking || [],
     usuarios: ensureAllSqlUsersExist(usuarios || []),
     sucursales: DEFAULT_SUCURSALES_MAESTRAS,
     updatedAt: new Date().toISOString()
@@ -938,6 +964,11 @@ function applyServerMasterStore(store) {
   if (Array.isArray(store.faltantes)) {
     faltantesPicking = safeMergeArrays(faltantesPicking, store.faltantes);
     saveData('ca_faltantes_picking', faltantesPicking);
+    changed = true;
+  }
+  if (Array.isArray(store.conteosPicking)) {
+    conteosPicking = safeMergeArrays(conteosPicking, store.conteosPicking);
+    saveData('ca_conteos_picking', conteosPicking);
     changed = true;
   }
 
@@ -1130,6 +1161,13 @@ async function fetchAPIData() {
     if (window._pendingPickingItem && !faltantesPicking.some(f => String(f.id) === String(window._pendingPickingItem.id))) {
       faltantesPicking.unshift(window._pendingPickingItem);
     }
+    if (Array.isArray(sqlData.conteosPicking)) {
+      conteosPicking = sqlData.conteosPicking;
+      if (window._pendingConteoPicking && !conteosPicking.some(c => String(c.id) === String(window._pendingConteoPicking.id))) {
+        conteosPicking.unshift(window._pendingConteoPicking);
+      }
+      saveData('ca_conteos_picking', conteosPicking);
+    }
 
     // Sincronizar en vivo los datos/permisos del usuario logueado en este dispositivo
     if (activeUserId && usuarios.length > 0) {
@@ -1158,7 +1196,7 @@ async function fetchAPIData() {
     }
     // Guardar copia local persistente de respaldo para cuando no haya red
     saveData('ca_master_cache', {
-      usuarios, sucursales, clientes, operadores, vendedores, proveedores, presupuestos, notas, faltantesPicking,
+      usuarios, sucursales, clientes, operadores, vendedores, proveedores, presupuestos, notas, faltantesPicking, conteosPicking,
       ultimoFolioReservado: window.ultimoFolioReservado,
       updatedAt: new Date().toISOString()
     });
@@ -1175,6 +1213,7 @@ async function fetchAPIData() {
       if (Array.isArray(cached.presupuestos)) presupuestos = cached.presupuestos;
       if (Array.isArray(cached.notas)) notas = cached.notas;
       if (Array.isArray(cached.faltantesPicking)) faltantesPicking = cached.faltantesPicking;
+      if (Array.isArray(cached.conteosPicking)) conteosPicking = cached.conteosPicking;
       if (typeof cached.ultimoFolioReservado === 'number') window.ultimoFolioReservado = cached.ultimoFolioReservado;
     }
 
@@ -7908,6 +7947,8 @@ function renderFaltantesPickingTable() {
   if (filtrados.length === 0) {
     tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding:20px; color:var(--text-muted);">No hay faltantes en picking registrados para los filtros seleccionados.</td></tr>`;
     document.getElementById('pk-total-units').textContent = '0';
+    if (typeof renderPickingConcentradoTable === 'function') renderPickingConcentradoTable();
+    if (typeof renderPickingHistorialConteos === 'function') renderPickingHistorialConteos();
     return;
   }
 
@@ -7935,6 +7976,9 @@ function renderFaltantesPickingTable() {
 
   const totalEl = document.getElementById('pk-total-units');
   if (totalEl) totalEl.textContent = totalUnidades.toLocaleString('es-MX');
+
+  if (typeof renderPickingConcentradoTable === 'function') renderPickingConcentradoTable();
+  if (typeof renderPickingHistorialConteos === 'function') renderPickingHistorialConteos();
 }
 
 function renderFaltantesPickingHorizontalChart(period = 'mes') {
@@ -8170,3 +8214,623 @@ window.printFaltantesPickingReport = function() {
   printArea.appendChild(div);
   window.print();
 };
+
+// =========================================================================
+// CONCENTRADO DE PRODUCTOS PARA CONTEO FÍSICO Y CAPTURA DE RAZONES / LO SUCEDIDO
+// =========================================================================
+window._draftConteoPicking = loadData('ca_draft_conteo_picking', {});
+window._lastConcentradoSignature = '';
+
+const RAZONES_CONTEO_PICKING = [
+  'Sin existencia física real en bodega',
+  'Sí había existencia (Error de surtido / ubicación)',
+  'Mal acomodado / En otro pasillo',
+  'Mercancía dañada / Caducada / Mal estado',
+  'Diferencia de inventario / Merma',
+  'Pendiente de ingreso / Recepción de proveedor',
+  'Error de captura en pedido / Picking',
+  'Otra razón'
+];
+
+function escapeHtmlAttr(str) {
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function getPickingConcentradoItems(customSource) {
+  const items = Array.isArray(customSource)
+    ? customSource
+    : (window.currentFaltantesPickingFiltered || faltantesPicking.filter(n => !n.eliminado));
+
+  const map = new Map();
+  items.forEach(item => {
+    if (!item || item.eliminado) return;
+    const rawCode = String(item.codigoInterno || '').trim().toUpperCase();
+    const rawDesc = String(item.descripcion || '').trim();
+    const key = rawCode || ('DESC:' + rawDesc.toUpperCase());
+    if (!key) return;
+
+    const cant = parseInt(item.cantidad, 10) || 0;
+    if (!map.has(key)) {
+      const masterMatch = rawCode
+        ? (productosMasterPicking || []).find(p => String(p.codigoInterno || '').trim().toUpperCase() === rawCode)
+        : null;
+      map.set(key, {
+        key,
+        codigoInterno: rawCode || 'S/C',
+        descripcion: (masterMatch && masterMatch.descripcion) ? masterMatch.descripcion : (rawDesc || 'Sin descripción'),
+        cantidadTotalFaltante: 0,
+        pickings: [],
+        clientes: [],
+        sucursales: [],
+        fechas: [],
+        observacionesPrevias: []
+      });
+    }
+    const entry = map.get(key);
+    entry.cantidadTotalFaltante += cant;
+    if (rawDesc && (!entry.descripcion || entry.descripcion === 'Sin descripción')) {
+      entry.descripcion = rawDesc;
+    }
+    const pkNum = String(item.numPicking || '').trim();
+    if (pkNum && !entry.pickings.includes(pkNum)) entry.pickings.push(pkNum);
+    const cliNom = String(item.clienteNombre || '').trim();
+    if (cliNom && !entry.clientes.includes(cliNom)) entry.clientes.push(cliNom);
+    const sucNom = String(item.sucursalNombre || item.sucursalId || '').trim();
+    if (sucNom && !entry.sucursales.includes(sucNom)) entry.sucursales.push(sucNom);
+    const fStr = String(item.fecha || '').trim();
+    if (fStr && !entry.fechas.includes(fStr)) entry.fechas.push(fStr);
+    const obsStr = String(item.observaciones || '').trim();
+    if (obsStr && !entry.observacionesPrevias.includes(obsStr)) entry.observacionesPrevias.push(obsStr);
+  });
+
+  return Array.from(map.values()).sort((a, b) => {
+    if (b.cantidadTotalFaltante !== a.cantidadTotalFaltante) {
+      return b.cantidadTotalFaltante - a.cantidadTotalFaltante;
+    }
+    return String(a.codigoInterno).localeCompare(String(b.codigoInterno));
+  });
+}
+
+window.updateDraftConteoPicking = function(key, field, value) {
+  if (!window._draftConteoPicking || typeof window._draftConteoPicking !== 'object') {
+    window._draftConteoPicking = {};
+  }
+  if (!window._draftConteoPicking[key]) {
+    window._draftConteoPicking[key] = { conteoFisico: '', razon: '', loSucedido: '' };
+  }
+  window._draftConteoPicking[key][field] = value;
+  saveData('ca_draft_conteo_picking', window._draftConteoPicking);
+};
+
+function renderPickingConcentradoTable(forceRebuild = false) {
+  const tbody = document.querySelector('#table-pk-concentrado-conteo tbody');
+  if (!tbody) return;
+
+  const fechaInput = document.getElementById('pk-conteo-fecha');
+  if (fechaInput && !fechaInput.value) {
+    fechaInput.value = localDateStr();
+  }
+  const respInput = document.getElementById('pk-conteo-responsable');
+  if (respInput && !respInput.value && currentUser && currentUser.nombre) {
+    respInput.value = currentUser.nombre;
+  }
+
+  const concentrado = getPickingConcentradoItems();
+  const totalProdsEl = document.getElementById('pk-concentrado-total-prods');
+  const totalUnitsEl = document.getElementById('pk-concentrado-total-units');
+
+  const totalUnidades = concentrado.reduce((acc, c) => acc + (c.cantidadTotalFaltante || 0), 0);
+  if (totalProdsEl) totalProdsEl.textContent = concentrado.length.toLocaleString('es-MX');
+  if (totalUnitsEl) totalUnitsEl.textContent = totalUnidades.toLocaleString('es-MX');
+
+  const newSig = concentrado.map(c => `${c.key}:${c.cantidadTotalFaltante}:${c.pickings.join(',')}`).join('|');
+
+  // Si el usuario está escribiendo dentro de la tabla de captura y los productos concentrados no cambiaron, no reconstruir el DOM
+  const activeEl = document.activeElement;
+  const isTypingInsideTable = activeEl && tbody.contains(activeEl);
+  if (!forceRebuild && isTypingInsideTable && window._lastConcentradoSignature === newSig) {
+    return;
+  }
+  window._lastConcentradoSignature = newSig;
+
+  tbody.innerHTML = '';
+
+  if (concentrado.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:20px; color:var(--text-muted);">No hay productos faltantes en el período filtrado para concentrar.</td></tr>`;
+    return;
+  }
+
+  concentrado.forEach(item => {
+    const draft = (window._draftConteoPicking && window._draftConteoPicking[item.key]) || {
+      conteoFisico: '',
+      razon: '',
+      loSucedido: item.observacionesPrevias.length > 0 ? item.observacionesPrevias.join(' / ') : ''
+    };
+    const safeKey = escapeHtmlAttr(item.key);
+    const optionsHtml = [
+      `<option value="">-- Seleccionar razón --</option>`,
+      ...RAZONES_CONTEO_PICKING.map(r => `<option value="${escapeHtmlAttr(r)}" ${draft.razon === r ? 'selected' : ''}>${escapeHtmlAttr(r)}</option>`)
+    ].join('');
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><span class="badge badge-secondary" style="font-family:monospace; font-size:12px;">${escapeHtmlAttr(item.codigoInterno)}</span></td>
+      <td>
+        <strong>${escapeHtmlAttr(item.descripcion)}</strong>
+        ${item.clientes.length > 0 ? `<div style="font-size:11px; color:var(--text-muted);">Clientes: ${escapeHtmlAttr(item.clientes.join(', '))}</div>` : ''}
+      </td>
+      <td style="text-align:center;">
+        <span class="badge badge-primary" style="background:#0284c7; color:#fff;">${item.pickings.length} picking(s)</span>
+        <div style="font-size:11px; color:var(--text-muted); margin-top:3px; max-width:180px; margin-left:auto; margin-right:auto; word-break:break-word;">
+          ${escapeHtmlAttr(item.pickings.join(', '))}
+        </div>
+      </td>
+      <td style="text-align:center; color:var(--danger-color); font-size:15px; font-weight:800;">
+        ${item.cantidadTotalFaltante}
+      </td>
+      <td style="text-align:center;">
+        <input type="number" class="form-control pk-input-conteo-fisico" data-key="${safeKey}" step="any" min="0"
+          placeholder="Cant. contada" value="${escapeHtmlAttr(draft.conteoFisico)}"
+          style="font-size:13px; font-weight:700; text-align:center; height:34px;"
+          oninput="updateDraftConteoPicking(this.getAttribute('data-key'), 'conteoFisico', this.value)">
+      </td>
+      <td>
+        <select class="form-control pk-select-razon-conteo" data-key="${safeKey}"
+          style="font-size:12px; height:34px;"
+          onchange="updateDraftConteoPicking(this.getAttribute('data-key'), 'razon', this.value)">
+          ${optionsHtml}
+        </select>
+      </td>
+      <td>
+        <input type="text" class="form-control pk-input-sucedido-conteo" data-key="${safeKey}"
+          placeholder="¿Qué sucedió / qué se encontró al contar?" value="${escapeHtmlAttr(draft.loSucedido)}"
+          style="font-size:12px; height:34px;"
+          oninput="updateDraftConteoPicking(this.getAttribute('data-key'), 'loSucedido', this.value)">
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+window.clearPickingConteoDraft = function() {
+  if (!confirm('¿Deseas limpiar los datos capturados en la tabla de conteo actual?')) return;
+  window._draftConteoPicking = {};
+  saveData('ca_draft_conteo_picking', {});
+  const notasGral = document.getElementById('pk-conteo-notas-gral');
+  if (notasGral) notasGral.value = '';
+  const fechaEl = document.getElementById('pk-conteo-fecha');
+  if (fechaEl) fechaEl.value = localDateStr();
+  renderPickingConcentradoTable(true);
+};
+
+// 1. IMPRIMIBLE APARTE: FORMATO CONCENTRADO PARA IR A CONTAR A BODEGA
+window.printPickingConcentradoParaContar = function() {
+  const concentrado = getPickingConcentradoItems();
+  if (concentrado.length === 0) {
+    alert('No hay productos en el concentrado actual para imprimir.');
+    return;
+  }
+  const printArea = document.getElementById('print-area');
+  if (!printArea) return;
+
+  const fInicio = document.getElementById('filter-pk-fecha-inicio')?.value || '';
+  const fFin = document.getElementById('filter-pk-fecha-fin')?.value || '';
+  const periodText = (fInicio || fFin) ? `${fInicio || 'Inicio'} al ${fFin || 'Hoy'}` : 'Período Activo';
+  const fechaConteo = document.getElementById('pk-conteo-fecha')?.value || localDateStr();
+  const responsable = document.getElementById('pk-conteo-responsable')?.value || (currentUser ? currentUser.nombre : 'Almacén / Contabilidad');
+
+  let totalUnidades = 0;
+
+  printArea.innerHTML = '';
+  const div = document.createElement('div');
+  div.style.padding = '18px';
+  div.style.fontFamily = 'Inter, sans-serif';
+  div.style.color = '#000';
+
+  div.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #0284c7; padding-bottom:10px; margin-bottom:14px;">
+      <div>
+        <h2 style="margin:0; font-size:17px; color:#0f172a;">CASA AYALA - CONCENTRADO DE PRODUCTOS PARA CONTEO FÍSICO EN BODEGA</h2>
+        <div style="font-size:11px; color:#334155; font-weight:600;">Formato de Verificación Física de Faltantes en Pickings (Para Ir a Contar)</div>
+      </div>
+      <div style="text-align:right; font-size:11px;">
+        <div><strong>Fecha de Conteo:</strong> ${escapeHtmlAttr(fechaConteo)}</div>
+        <div><strong>Período Pickings:</strong> ${escapeHtmlAttr(periodText)}</div>
+        <div><strong>Responsable:</strong> ${escapeHtmlAttr(responsable)}</div>
+      </div>
+    </div>
+
+    <table style="width:100%; border-collapse:collapse; font-size:10.5px; margin-bottom:18px;">
+      <thead>
+        <tr style="background:#e0f2fe; border:1px solid #000;">
+          <th style="padding:6px; border:1px solid #000; text-align:center; width:28px;">#</th>
+          <th style="padding:6px; border:1px solid #000; text-align:left; width:85px;">Código</th>
+          <th style="padding:6px; border:1px solid #000; text-align:left;">Descripción del Producto</th>
+          <th style="padding:6px; border:1px solid #000; text-align:left; width:130px;">Pickings Afectados</th>
+          <th style="padding:6px; border:1px solid #000; text-align:center; width:75px;">Total Faltante</th>
+          <th style="padding:6px; border:1px solid #000; text-align:center; width:95px;">Conteo Físico Bodega</th>
+          <th style="padding:6px; border:1px solid #000; text-align:center; width:75px;">Diferencia</th>
+          <th style="padding:6px; border:1px solid #000; text-align:left; width:220px;">Razón Encontrada / Lo Sucedido en Pasillo</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${concentrado.map((item, idx) => {
+          totalUnidades += item.cantidadTotalFaltante;
+          return `
+            <tr style="border:1px solid #000; page-break-inside:avoid;">
+              <td style="padding:8px 5px; border:1px solid #000; text-align:center; font-weight:bold;">${idx + 1}</td>
+              <td style="padding:8px 5px; border:1px solid #000; font-family:monospace; font-weight:bold; font-size:11px;">${escapeHtmlAttr(item.codigoInterno)}</td>
+              <td style="padding:8px 5px; border:1px solid #000;">
+                <strong>${escapeHtmlAttr(item.descripcion)}</strong>
+                ${item.sucursales.length ? `<div style="font-size:9px; color:#475569;">Suc: ${escapeHtmlAttr(item.sucursales.join(', '))}</div>` : ''}
+              </td>
+              <td style="padding:8px 5px; border:1px solid #000; font-size:9.5px;">
+                <strong>(${item.pickings.length})</strong> ${escapeHtmlAttr(item.pickings.join(', '))}
+              </td>
+              <td style="padding:8px 5px; border:1px solid #000; text-align:center; font-weight:bold; font-size:12px; color:#dc2626;">
+                ${item.cantidadTotalFaltante}
+              </td>
+              <td style="padding:8px 5px; border:1px solid #000; background:#fafafa;"></td>
+              <td style="padding:8px 5px; border:1px solid #000; background:#fafafa;"></td>
+              <td style="padding:8px 5px; border:1px solid #000; background:#fafafa;"></td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+
+    <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; font-weight:bold; margin-bottom:18px; padding:8px 12px; border:1px solid #000; background:#f8fafc;">
+      <div>TOTAL PRODUCTOS DISTINTOS A CONTAR: ${concentrado.length}</div>
+      <div>TOTAL UNIDADES FALTANTES REPORTADAS: <span style="color:#dc2626;">${totalUnidades.toLocaleString('es-MX')}</span></div>
+    </div>
+
+    <div style="border:1px solid #000; padding:10px; margin-bottom:28px; min-height:55px; font-size:10.5px;">
+      <strong>OBSERVACIONES GENERALES DEL CONTEO / LO SUCEDIDO EN BODEGA:</strong>
+      <div style="border-bottom:1px dotted #94a3b8; height:22px; margin-top:6px;"></div>
+      <div style="border-bottom:1px dotted #94a3b8; height:22px;"></div>
+    </div>
+
+    <div style="margin-top:35px; page-break-inside:avoid;">
+      <div style="display:flex; justify-content:space-between;">
+        <div style="text-align:center; width:30%;">
+          <div style="border-bottom:1px solid #000; height:32px; margin-bottom:5px;"></div>
+          <div style="font-size:10px; font-weight:bold;">REALIZÓ CONTEO FÍSICO</div>
+          <div style="font-size:9px; color:#64748b;">Nombre, Fecha y Firma</div>
+        </div>
+        <div style="text-align:center; width:30%;">
+          <div style="border-bottom:1px solid #000; height:32px; margin-bottom:5px;"></div>
+          <div style="font-size:10px; font-weight:bold;">SUPERVISIÓN DE ALMACÉN / PICKING</div>
+          <div style="font-size:9px; color:#64748b;">Validación en Bodega</div>
+        </div>
+        <div style="text-align:center; width:30%;">
+          <div style="border-bottom:1px solid #000; height:32px; margin-bottom:5px;"></div>
+          <div style="font-size:10px; font-weight:bold;">CONTABILIDAD / AUDITORÍA</div>
+          <div style="font-size:9px; color:#64748b;">Recepción de Conteo</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  printArea.appendChild(div);
+  window.print();
+};
+
+// Construye el objeto de Conteo a partir de lo capturado actualmente en pantalla
+function buildCurrentPickingConteoObject() {
+  const concentrado = getPickingConcentradoItems();
+  const fechaConteo = document.getElementById('pk-conteo-fecha')?.value || localDateStr();
+  const responsable = (document.getElementById('pk-conteo-responsable')?.value || (currentUser ? currentUser.nombre : 'Usuario')).trim();
+  const notasGenerales = (document.getElementById('pk-conteo-notas-gral')?.value || '').trim();
+  const fInicio = document.getElementById('filter-pk-fecha-inicio')?.value || '';
+  const fFin = document.getElementById('filter-pk-fecha-fin')?.value || '';
+  const periodo = (fInicio || fFin) ? `${fInicio || 'Inicio'} al ${fFin || 'Hoy'}` : 'Período Activo';
+
+  const productosContados = concentrado.map(item => {
+    const draft = (window._draftConteoPicking && window._draftConteoPicking[item.key]) || {};
+    const rawFisico = draft.conteoFisico !== undefined && draft.conteoFisico !== '' ? parseFloat(draft.conteoFisico) : null;
+    const conteoFisico = (rawFisico !== null && !isNaN(rawFisico)) ? rawFisico : null;
+    const diferencia = conteoFisico !== null ? (conteoFisico - item.cantidadTotalFaltante) : null;
+    return {
+      key: item.key,
+      codigoInterno: item.codigoInterno,
+      descripcion: item.descripcion,
+      pickings: item.pickings,
+      clientes: item.clientes,
+      sucursales: item.sucursales,
+      cantidadTotalFaltante: item.cantidadTotalFaltante,
+      conteoFisico,
+      diferencia,
+      razon: String(draft.razon || '').trim(),
+      loSucedido: String(draft.loSucedido || '').trim()
+    };
+  });
+
+  const totalUnidadesFaltantes = productosContados.reduce((acc, p) => acc + (p.cantidadTotalFaltante || 0), 0);
+
+  return {
+    fecha: fechaConteo,
+    responsable,
+    observaciones: notasGenerales,
+    notasGenerales,
+    periodo,
+    idUsuario: currentUser ? (currentUser.id || currentUser.id_usuario) : 'U01',
+    usuarioNombre: currentUser ? currentUser.nombre : responsable,
+    usuarioRol: currentUser ? currentUser.rol : '',
+    sucursalId: currentUser && currentUser.sucursalId ? currentUser.sucursalId : 'S01',
+    totalProductos: productosContados.length,
+    totalUnidadesFaltantes,
+    productos: productosContados
+  };
+}
+
+// 2. GUARDAR EL CONTEO FÍSICO Y LAS RAZONES ENCONTRADAS
+window.savePickingConteo = async function() {
+  const baseObj = buildCurrentPickingConteoObject();
+  if (!baseObj.productos || baseObj.productos.length === 0) {
+    alert('No hay productos en el concentrado actual para guardar.');
+    return;
+  }
+
+  const capturadosCount = baseObj.productos.filter(p => p.conteoFisico !== null || p.razon || p.loSucedido).length;
+  if (capturadosCount === 0) {
+    if (!confirm('Aún no has capturado cantidades físicas ni razones en las filas. ¿Deseas guardar el conteo así de todas formas?')) {
+      return;
+    }
+  }
+
+  const nextNum = (conteosPicking ? conteosPicking.length : 0) + 1;
+  const folioConteo = `CNT-${String(nextNum).padStart(4, '0')}`;
+  const idConteo = window._editingConteoId || `CNT-${Date.now()}`;
+
+  const existingIdx = (conteosPicking || []).findIndex(c => String(c.id) === String(idConteo));
+  const conteoRecord = {
+    ...baseObj,
+    id: idConteo,
+    folioConteo: existingIdx !== -1 && conteosPicking[existingIdx].folioConteo ? conteosPicking[existingIdx].folioConteo : folioConteo,
+    fechaRegistro: new Date().toISOString()
+  };
+
+  window._pendingConteoPicking = conteoRecord;
+  if (existingIdx !== -1) {
+    conteosPicking[existingIdx] = conteoRecord;
+  } else {
+    conteosPicking.unshift(conteoRecord);
+  }
+  window._editingConteoId = null;
+
+  saveData('ca_conteos_picking', conteosPicking);
+  renderPickingHistorialConteos();
+
+  try {
+    if (!SQL_TUNNEL_BASE) await resolveServerURL();
+    await fetch(`${SQL_TUNNEL_BASE}/api/conteos-picking`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(conteoRecord)
+    });
+  } catch (e) {
+    console.warn('[savePickingConteo] Guardado en respaldo:', e.message);
+  } finally {
+    setTimeout(() => {
+      if (window._pendingConteoPicking && window._pendingConteoPicking.id === conteoRecord.id) {
+        window._pendingConteoPicking = null;
+      }
+    }, 10000);
+  }
+
+  if (confirm(`✅ Conteo ${conteoRecord.folioConteo} guardado correctamente con fecha ${conteoRecord.fecha}.\n\n¿Deseas imprimir el Reporte del Conteo y Razones Encontradas ahora?`)) {
+    printPickingConteoObject(conteoRecord);
+  }
+};
+
+// 3. IMPRIMIR EL CONTEO (ACTUAL O GUARDADO) CON LO SUCEDIDO Y RAZONES ENCONTRADAS
+function printPickingConteoObject(conteoObj) {
+  if (!conteoObj || !Array.isArray(conteoObj.productos) || conteoObj.productos.length === 0) {
+    alert('No hay datos de conteo para imprimir.');
+    return;
+  }
+  const printArea = document.getElementById('print-area');
+  if (!printArea) return;
+
+  let totalFaltante = 0;
+  let totalContado = 0;
+
+  printArea.innerHTML = '';
+  const div = document.createElement('div');
+  div.style.padding = '18px';
+  div.style.fontFamily = 'Inter, sans-serif';
+  div.style.color = '#000';
+
+  div.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #800000; padding-bottom:10px; margin-bottom:14px;">
+      <div>
+        <h2 style="margin:0; font-size:17px; color:#800000;">CASA AYALA - REPORTE DE CONTEO FÍSICO Y RAZONES ENCONTRADAS EN PICKING</h2>
+        <div style="font-size:11px; color:#334155; font-weight:600;">Resultado de Auditoría de Faltantes, Captura de lo Sucedido y Causas</div>
+      </div>
+      <div style="text-align:right; font-size:11px;">
+        <div><strong>Folio Conteo:</strong> ${escapeHtmlAttr(conteoObj.folioConteo || conteoObj.id || 'ACTUAL')}</div>
+        <div><strong>Fecha de Conteo:</strong> ${escapeHtmlAttr(conteoObj.fecha || localDateStr())}</div>
+        <div><strong>Responsable:</strong> ${escapeHtmlAttr(conteoObj.responsable || conteoObj.usuarioNombre || '')}</div>
+        <div><strong>Período Evaluado:</strong> ${escapeHtmlAttr(conteoObj.periodo || 'Período Activo')}</div>
+      </div>
+    </div>
+
+    ${conteoObj.observaciones ? `
+      <div style="margin-bottom:12px; padding:8px 12px; background:#f8fafc; border-left:4px solid #800000; font-size:11px;">
+        <strong>Resumen / Observaciones Generales de lo Sucedido:</strong> ${escapeHtmlAttr(conteoObj.observaciones)}
+      </div>
+    ` : ''}
+
+    <table style="width:100%; border-collapse:collapse; font-size:10px; margin-bottom:18px;">
+      <thead>
+        <tr style="background:#f1f5f9; border:1px solid #000;">
+          <th style="padding:6px; border:1px solid #000; text-align:center; width:26px;">#</th>
+          <th style="padding:6px; border:1px solid #000; text-align:left; width:78px;">Código</th>
+          <th style="padding:6px; border:1px solid #000; text-align:left;">Descripción Producto</th>
+          <th style="padding:6px; border:1px solid #000; text-align:left; width:110px;">Pickings</th>
+          <th style="padding:6px; border:1px solid #000; text-align:center; width:68px;">Faltante Rep.</th>
+          <th style="padding:6px; border:1px solid #000; text-align:center; width:68px;">Conteo Físico</th>
+          <th style="padding:6px; border:1px solid #000; text-align:left; width:155px;">Razón Encontrada</th>
+          <th style="padding:6px; border:1px solid #000; text-align:left;">Captura de lo Sucedido / Hallazgo</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${conteoObj.productos.map((p, idx) => {
+          const falt = parseInt(p.cantidadTotalFaltante, 10) || 0;
+          totalFaltante += falt;
+          const tieneFisico = p.conteoFisico !== null && p.conteoFisico !== undefined && p.conteoFisico !== '';
+          if (tieneFisico) totalContado += (parseFloat(p.conteoFisico) || 0);
+          return `
+            <tr style="border:1px solid #cbd5e1; page-break-inside:avoid;">
+              <td style="padding:6px 5px; border:1px solid #cbd5e1; text-align:center;">${idx + 1}</td>
+              <td style="padding:6px 5px; border:1px solid #cbd5e1; font-family:monospace; font-weight:bold;">${escapeHtmlAttr(p.codigoInterno)}</td>
+              <td style="padding:6px 5px; border:1px solid #cbd5e1;"><strong>${escapeHtmlAttr(p.descripcion)}</strong></td>
+              <td style="padding:6px 5px; border:1px solid #cbd5e1; font-size:9px;">${escapeHtmlAttr((p.pickings || []).join(', '))}</td>
+              <td style="padding:6px 5px; border:1px solid #cbd5e1; text-align:center; font-weight:bold; color:#dc2626;">${falt}</td>
+              <td style="padding:6px 5px; border:1px solid #cbd5e1; text-align:center; font-weight:bold; color:#0f172a;">
+                ${tieneFisico ? p.conteoFisico : 'S/C'}
+              </td>
+              <td style="padding:6px 5px; border:1px solid #cbd5e1; font-weight:600;">
+                ${escapeHtmlAttr(p.razon || 'Sin especificar')}
+              </td>
+              <td style="padding:6px 5px; border:1px solid #cbd5e1;">
+                ${escapeHtmlAttr(p.loSucedido || '-')}
+              </td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+
+    <div style="display:flex; justify-content:space-between; align-items:center; font-size:11.5px; font-weight:bold; margin-bottom:26px; padding:8px 12px; border:1px solid #000; background:#f8fafc;">
+      <div>PRODUCTOS AUDITADOS: ${conteoObj.productos.length}</div>
+      <div>TOTAL UNIDADES FALTANTES REPORTADAS: <span style="color:#dc2626;">${totalFaltante.toLocaleString('es-MX')}</span></div>
+      <div>TOTAL EXISTENCIA FÍSICA CONTADA: <span style="color:#0284c7;">${totalContado.toLocaleString('es-MX')}</span></div>
+    </div>
+
+    <div style="margin-top:35px; page-break-inside:avoid;">
+      <div style="display:flex; justify-content:space-around;">
+        <div style="text-align:center; width:35%;">
+          <div style="border-bottom:1px solid #000; height:32px; margin-bottom:5px;"></div>
+          <div style="font-size:10px; font-weight:bold;">REALIZÓ CONTEO Y CAPTURA (${escapeHtmlAttr(conteoObj.responsable || 'ALMACÉN')})</div>
+          <div style="font-size:9px; color:#64748b;">Verificación Física de Mercancía</div>
+        </div>
+        <div style="text-align:center; width:35%;">
+          <div style="border-bottom:1px solid #000; height:32px; margin-bottom:5px;"></div>
+          <div style="font-size:10px; font-weight:bold;">CONTABILIDAD / GERENCIA</div>
+          <div style="font-size:9px; color:#64748b;">Autorización y Ajuste de Inventario</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  printArea.appendChild(div);
+  window.print();
+}
+
+window.printPickingConteoActual = function() {
+  const obj = buildCurrentPickingConteoObject();
+  obj.folioConteo = 'VISTA-ACTUAL';
+  printPickingConteoObject(obj);
+};
+
+window.printPickingConteoById = function(id) {
+  const found = (conteosPicking || []).find(c => String(c.id) === String(id));
+  if (!found) {
+    alert('No se encontró el conteo seleccionado.');
+    return;
+  }
+  printPickingConteoObject(found);
+};
+
+window.loadPickingConteoToDraft = function(id) {
+  const found = (conteosPicking || []).find(c => String(c.id) === String(id));
+  if (!found) return;
+
+  window._editingConteoId = found.id;
+  const fechaEl = document.getElementById('pk-conteo-fecha');
+  if (fechaEl && found.fecha) fechaEl.value = found.fecha;
+  const respEl = document.getElementById('pk-conteo-responsable');
+  if (respEl && found.responsable) respEl.value = found.responsable;
+  const notasEl = document.getElementById('pk-conteo-notas-gral');
+  if (notasEl) notasEl.value = found.observaciones || found.notasGenerales || '';
+
+  if (!window._draftConteoPicking || typeof window._draftConteoPicking !== 'object') {
+    window._draftConteoPicking = {};
+  }
+  (found.productos || []).forEach(p => {
+    const k = p.key || String(p.codigoInterno || '').trim().toUpperCase();
+    if (k) {
+      window._draftConteoPicking[k] = {
+        conteoFisico: p.conteoFisico !== null && p.conteoFisico !== undefined ? String(p.conteoFisico) : '',
+        razon: p.razon || '',
+        loSucedido: p.loSucedido || ''
+      };
+    }
+  });
+  saveData('ca_draft_conteo_picking', window._draftConteoPicking);
+  renderPickingConcentradoTable(true);
+
+  const tableEl = document.getElementById('table-pk-concentrado-conteo');
+  if (tableEl) tableEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+};
+
+window.deletePickingConteo = async function(id) {
+  if (!confirm('¿Estás seguro de que deseas eliminar este registro de conteo guardado?')) return;
+  conteosPicking = (conteosPicking || []).filter(c => String(c.id) !== String(id));
+  saveData('ca_conteos_picking', conteosPicking);
+  renderPickingHistorialConteos();
+  try {
+    if (!SQL_TUNNEL_BASE) await resolveServerURL();
+    await fetch(`${SQL_TUNNEL_BASE}/api/conteos-picking/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  } catch (e) {}
+};
+
+function renderPickingHistorialConteos() {
+  const tbody = document.querySelector('#table-pk-historial-conteos tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  const lista = (conteosPicking || []).filter(c => c && !c.eliminado);
+  if (lista.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding:18px; color:var(--text-muted);">Aún no hay conteos físicos guardados. Captura un conteo arriba y haz clic en "Guardar Conteo y Razones".</td></tr>`;
+    return;
+  }
+
+  lista.forEach(c => {
+    const prods = Array.isArray(c.productos) ? c.productos : [];
+    const totalFalt = c.totalUnidadesFaltantes || prods.reduce((acc, p) => acc + (parseInt(p.cantidadTotalFaltante, 10) || 0), 0);
+    const resumenRazones = prods
+      .filter(p => p.razon || p.loSucedido || (p.conteoFisico !== null && p.conteoFisico !== undefined && p.conteoFisico !== ''))
+      .slice(0, 3)
+      .map(p => `${p.codigoInterno}: ${p.conteoFisico !== null && p.conteoFisico !== undefined && p.conteoFisico !== '' ? `Contado=${p.conteoFisico}` : ''} ${p.razon ? `(${p.razon})` : ''} ${p.loSucedido ? `- ${p.loSucedido}` : ''}`.trim())
+      .join(' | ');
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><strong>${escapeHtmlAttr(c.folioConteo || c.id)}</strong></td>
+      <td>${escapeHtmlAttr(c.fecha || '')}</td>
+      <td>${escapeHtmlAttr(c.responsable || c.usuarioNombre || '')}</td>
+      <td style="text-align:center;"><span class="badge badge-secondary">${prods.length} prod(s)</span></td>
+      <td style="text-align:center; font-weight:700; color:var(--danger-color);">${totalFalt}</td>
+      <td style="font-size:11.5px; max-width:280px;">${escapeHtmlAttr(resumenRazones || 'Sin detalle individual')}</td>
+      <td style="font-size:11.5px;">${escapeHtmlAttr(c.observaciones || c.notasGenerales || '-')}</td>
+      <td style="text-align:center; white-space:nowrap;">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="printPickingConteoById('${escapeHtmlAttr(c.id)}')" title="Imprimir este Conteo" style="padding:3px 8px; background:#0f172a; color:#fff; border:none;">
+          <i class="fa-solid fa-print"></i> Imprimir
+        </button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="loadPickingConteoToDraft('${escapeHtmlAttr(c.id)}')" title="Ver / Cargar en tabla de captura" style="padding:3px 8px;">
+          <i class="fa-solid fa-pen-to-square"></i> Cargar
+        </button>
+        <button type="button" class="btn btn-danger btn-sm" onclick="deletePickingConteo('${escapeHtmlAttr(c.id)}')" title="Eliminar Conteo" style="padding:3px 8px;">
+          <i class="fa-solid fa-trash-can"></i>
+        </button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}

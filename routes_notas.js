@@ -357,7 +357,7 @@ module.exports = function registrarRutasNotas(app, ctx) {
     app.get('/api/catalogos/all', async (req, res) => {
         try {
             const pool = await getPool();
-            const [cliR, opeR, venR, provR, presR, usuR, sucR, notasR, falR, folR] = await Promise.all([
+            const [cliR, opeR, venR, provR, presR, usuR, sucR, notasR, falR, conR, folR] = await Promise.all([
                 pool.request().query(`SELECT id_cliente AS id, nombre, ISNULL(codigo_interno,'') AS codigoInterno, tiene_derecho_descuento AS tieneDerechoDescuento, ISNULL(NULLIF(id_vendedor,''),'PUBLICO') AS vendedorId FROM dbo.Clientes WHERE ISNULL(eliminado,0)=0 ORDER BY nombre`),
                 pool.request().query(`SELECT id_operador AS id, nombre, ISNULL(puesto,'') AS puesto FROM dbo.Operadores WHERE ISNULL(eliminado,0)=0 ORDER BY nombre`),
                 pool.request().query(`SELECT id_vendedor AS id, nombre, ISNULL(id_sucursal,'S01') AS sucursalId, ISNULL(id_usuario,'') AS userId FROM dbo.Vendedores WHERE ISNULL(eliminado,0)=0 ORDER BY nombre`),
@@ -367,6 +367,7 @@ module.exports = function registrarRutasNotas(app, ctx) {
                 pool.request().query(`SELECT id_sucursal AS id, id_sucursal, nombre, ISNULL(direccion,'') AS direccion, activa_financiera AS activaFinanciera FROM dbo.Sucursales ORDER BY id_sucursal`),
                 pool.request().query(SQL_SELECT_NOTAS + ' ORDER BY fecha_emision DESC, id_nota DESC'),
                 pool.request().query(`SELECT id, ISNULL(codigo_interno,'') AS codigoInterno, ISNULL(descripcion,'') AS descripcion, ISNULL(motivo,'') AS motivo, ISNULL(id_usuario,'') AS idUsuario, ISNULL(id_sucursal,'S01') AS sucursalId, CONVERT(VARCHAR(23),fecha_registro,126) AS fechaRegistro, ISNULL(datos_json,'{}') AS datosJson FROM dbo.FaltantesPicking WHERE ISNULL(resuelto,0)=0 ORDER BY fecha_registro DESC`),
+                pool.request().query(`SELECT id, ISNULL(fecha,'') AS fecha, ISNULL(responsable,'') AS responsable, ISNULL(id_usuario,'') AS idUsuario, ISNULL(id_sucursal,'S01') AS sucursalId, ISNULL(observaciones,'') AS observaciones, CONVERT(VARCHAR(23),fecha_registro,126) AS fechaRegistro, ISNULL(datos_json,'{}') AS datosJson FROM dbo.ConteosPicking WHERE ISNULL(eliminado,0)=0 ORDER BY fecha_registro DESC`).catch(() => ({ recordset: [] })),
                 pool.request().query(`SELECT ISNULL(MAX(ultimo_folio),0) AS u FROM dbo.FolioControl`)
             ]);
 
@@ -385,6 +386,21 @@ module.exports = function registrarRutasNotas(app, ctx) {
                          fechaRegistro: extra.fechaRegistro || r.fechaRegistro };
             });
 
+            const conteosPicking = (conR && conR.recordset ? conR.recordset : []).map(r => {
+                let extra = {};
+                try { extra = JSON.parse(r.datosJson || '{}'); } catch (e) {}
+                return {
+                    ...extra,
+                    id: r.id,
+                    fecha: r.fecha || extra.fecha,
+                    responsable: r.responsable || extra.responsable,
+                    idUsuario: r.idUsuario || extra.idUsuario,
+                    sucursalId: r.sucursalId || extra.sucursalId,
+                    observaciones: r.observaciones || extra.observaciones,
+                    fechaRegistro: extra.fechaRegistro || r.fechaRegistro
+                };
+            });
+
             res.json({
                 clientes: cliR.recordset,
                 operadores: opeR.recordset,
@@ -395,6 +411,7 @@ module.exports = function registrarRutasNotas(app, ctx) {
                 sucursales: sucR.recordset,
                 notas: notasR.recordset.map(rowToNota),
                 faltantes,
+                conteosPicking,
                 ultimoFolioReservado: folR.recordset[0].u,
                 serverTime: new Date().toISOString()
             });
