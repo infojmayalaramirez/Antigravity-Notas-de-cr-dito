@@ -523,12 +523,16 @@ async function handleFirebaseCloudAPI(apiPath, method, bodyText) {
       if (nota.estado_operacion !== 'Cancelada') nota.estado = 'Rechazada';
       nota.motivoRechazo = body.motivo || '';
     } else if (accion === 'firmar') {
-      const slot = body.tipoFirma || 'autorizo';
+      const slot = body.key || body.tipoFirma || 'autorizo';
       nota.firmas[slot] = {
         usuario: usr ? usr.nombre : 'Usuario',
         rol: usr ? usr.rol : '',
         fecha: new Date().toLocaleString('es-MX')
       };
+      if (slot === 'autorizo' && (nota.estado_autorizacion === 'Borrador' || nota.estado === 'Borrador')) {
+        nota.estado_autorizacion = 'Autorizada';
+        if (nota.estado_operacion !== 'Cancelada') nota.estado = 'Autorizada';
+      }
       const reqSlots = String(nota.tipo || '').toLowerCase().includes('finan')
         ? ['elaboro', 'contabilidad', 'autorizo']
         : ['elaboro', 'almacen', 'autorizo'];
@@ -2358,8 +2362,13 @@ function initDashboard() {
   const notasActivas = notasFiltradas.filter(n => getNotaDisplayState(n) !== 'Cancelada');
   document.getElementById('dash-total-notas').textContent = notasActivas.length;
   
-  const countFisicas = notasActivas.filter(n => isNoteTipoMatch(n, 'Fisico')).length;
-  document.getElementById('dash-total-fisicas').textContent = countFisicas;
+  const notasFisicasActivas = notasActivas.filter(n => isNoteTipoMatch(n, 'Fisico'));
+  const countFisicas = notasFisicasActivas.length;
+  const totalFisicasMonto = notasFisicasActivas.reduce((sum, n) => sum + (parseFloat(n.total) || 0), 0);
+  const elDashFisicas = document.getElementById('dash-total-fisicas');
+  if (elDashFisicas) {
+    elDashFisicas.innerHTML = `${countFisicas} <span style="font-size: 17px; color: var(--danger-color); font-weight: 800; margin-left: 6px;">(${formatCurrency(totalFisicasMonto)})</span>`;
+  }
 
   const totalFin = notasActivas
     .filter(n => isNoteTipoMatch(n, 'Financiero'))

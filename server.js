@@ -1689,6 +1689,35 @@ async function pullFromFirebaseToSQL() {
                 `).catch((err) => console.warn('[Firebase Pull Presupuesto]', err.message));
         }
 
+        // 2.6. Proveedores creados o actualizados en la nube
+        for (const p of toArr(fb.proveedores)) {
+            if (!p || !p.id || p.eliminado) continue;
+            const pId = String(p.id).trim().slice(0, 50);
+            const pNom = String(p.nombre || '').trim().slice(0, 255);
+            const d1 = parseFloat(p.desc1 || 0) || 0;
+            const d2 = parseFloat(p.desc2 || 0) || 0;
+            const d3 = parseFloat(p.desc3 || 0) || 0;
+            const cj = JSON.stringify(Array.isArray(p.clientesCajon) ? p.clientesCajon : []);
+            const fi = String(p.fechaInicio || '').slice(0, 50);
+            const ff = String(p.fechaFin || '').slice(0, 50);
+            const tp = String(p.tipoPromo || 'clientes_exclusivos').slice(0, 50);
+            await pool.request()
+                .input('id', sql.VarChar, pId)
+                .input('nom', sql.VarChar, pNom)
+                .input('d1', sql.Decimal(18, 2), d1)
+                .input('d2', sql.Decimal(18, 2), d2)
+                .input('d3', sql.Decimal(18, 2), d3)
+                .input('cj', sql.VarChar(sql.MAX), cj)
+                .input('fi', sql.VarChar, fi)
+                .input('ff', sql.VarChar, ff)
+                .input('tp', sql.VarChar, tp)
+                .query(`
+                    IF NOT EXISTS (SELECT 1 FROM dbo.Proveedores WHERE id_proveedor=@id)
+                        INSERT INTO dbo.Proveedores (id_proveedor,nombre,desc1,desc2,desc3,clientes_cajon_json,fecha_inicio,fecha_fin,tipo_promo,eliminado)
+                        VALUES (@id,@nom,@d1,@d2,@d3,@cj,@fi,@ff,@tp,0)
+                `).catch((err) => console.warn('[Firebase Pull Proveedor]', err.message));
+        }
+
         // 3. Notas de crédito creadas o firmadas/canceladas en la nube mientras la laptop estuvo apagada
         for (const n of toArr(fb.notas)) {
             const folNum = parseInt(n.folio || String(n.id || '').replace(/\D/g, ''), 10);
@@ -1696,14 +1725,17 @@ async function pullFromFirebaseToSQL() {
             const cleanUid = n.uid ? String(n.uid).replace(/[%_\[\]"]/g, '').trim() : '';
             const uidPat = cleanUid ? `%"uid":"${cleanUid}"%` : '';
             const jsonStr = JSON.stringify(n);
-            const estAut = String(n.estado_autorizacion || n.estado || 'Autorizada').slice(0, 50);
+            const estAut = String(n.estado_autorizacion || (n.estado && n.estado !== 'Cancelada' ? n.estado : 'Autorizada')).slice(0, 50);
             const estOp = String(n.estado_operacion || (n.estado === 'Cancelada' ? 'Cancelada' : 'Activa')).slice(0, 50);
             const tipoNota = String(n.tipo_nota || (String(n.tipo || '').toLowerCase().includes('finan') ? 'Financiera' : 'Física')).slice(0, 50);
             const idSuc = String(n.sucursalId || n.id_sucursal || 'S01').slice(0, 10);
             const idVen = String(n.vendedorId || n.id_vendedor || 'U01').slice(0, 50);
             const idCli = String(n.clienteId || n.id_cliente || '').slice(0, 50);
             const idOpe = String(n.operadorId || n.id_operador || '').slice(0, 50);
-            const monto = parseFloat(n.total || n.monto_total || 0) || 0;
+            const cliNom = String(n.clienteNombre || n.cliente_nombre || idCli).slice(0, 200);
+            const opeNom = String(n.operadorNombre || n.operador_nombre || idOpe).slice(0, 200);
+            const fechaEm = String(n.fechaEmision || n.fecha_emision || new Date().toISOString().substring(0, 10)).substring(0, 10);
+            const monto = parseFloat(n.total || n.monto_total || n.importeDescuento || 0) || 0;
 
             await pool.request()
                 .input('id', sql.Int, folNum)
@@ -1713,6 +1745,9 @@ async function pullFromFirebaseToSQL() {
                 .input('ven', sql.VarChar, idVen)
                 .input('cli', sql.VarChar, idCli)
                 .input('ope', sql.VarChar, idOpe)
+                .input('cliNom', sql.VarChar, cliNom)
+                .input('opeNom', sql.VarChar, opeNom)
+                .input('fecha', sql.VarChar, fechaEm)
                 .input('monto', sql.Decimal(18, 2), monto)
                 .input('aut', sql.VarChar, estAut)
                 .input('op', sql.VarChar, estOp)
@@ -1722,15 +1757,25 @@ async function pullFromFirebaseToSQL() {
                         SELECT 1 FROM dbo.Notas
                         WHERE id_nota=@id OR (@uidPat <> '' AND datos_json LIKE @uidPat)
                     )
-                        INSERT INTO dbo.Notas (id_nota,tipo_nota,id_sucursal,id_usuario_creador,id_cliente,id_operador,monto_total,estado,estado_autorizacion,estado_operacion,datos_json)
-                        VALUES (@id,@tipo,@suc,@ven,@cli,@ope,@monto,@aut,@aut,@op,@json)
+                    BEGIN
+                        SET IDENTITY_INSERT dbo.Notas ON;
+                        INSERT INTO dbo.Notas
+                            (id_nota, folio_consecutivo, tipo_nota, impresa, monto_total,
+                             id_cliente, id_operador, cliente_nombre, operador_nombre,
+                             id_usuario_creador, id_sucursal, fecha_emision,
+                             estado_autorizacion, estado_operacion, datos_json)
+                        VALUES (@id, @id, @tipo, 0, @monto, @cli, @ope, @cliNom, @opeNom,
+                                @ven, @suc, ISNULL(TRY_CAST(@fecha AS DATE), GETDATE()),
+                                @aut, @op, @json);
+                        SET IDENTITY_INSERT dbo.Notas OFF;
+                    END
                     ELSE
                         UPDATE dbo.Notas
                         SET estado_operacion = CASE WHEN @op='Cancelada' THEN 'Cancelada' ELSE estado_operacion END,
-                            estado_autorizacion = CASE WHEN @aut IN ('Firmada','Rechazada') THEN @aut ELSE estado_autorizacion END,
+                            estado_autorizacion = CASE WHEN @aut IN ('Firmada','Rechazada','Autorizada') THEN @aut ELSE estado_autorizacion END,
                             datos_json = CASE WHEN @op='Cancelada' OR @aut IN ('Firmada','Rechazada') THEN @json ELSE datos_json END
                         WHERE id_nota=@id
-                `).catch(() => {});
+                `).catch((err) => console.warn('[Firebase Pull Nota]', folNum, err.message));
         }
 
         // 4. Conteos Físicos de Picking guardados en la nube
