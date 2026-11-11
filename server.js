@@ -1570,7 +1570,7 @@ function httpsPutFirebase(dataObj) {
         const req = https.request(FIREBASE_STORE_URL, {
             method: 'PUT',
             family: 4,
-            timeout: 10000,
+            timeout: 25000,
             headers: {
                 'Content-Type': 'application/json; charset=utf-8',
                 'Content-Length': bodyBuf.length
@@ -1586,8 +1586,12 @@ function httpsPutFirebase(dataObj) {
     });
 }
 
+let _pushPendingAfterSync = false;
 async function pushSQLToFirebase() {
-    if (_isSyncingFirebase) return;
+    if (_isSyncingFirebase) {
+        _pushPendingAfterSync = true;
+        return;
+    }
     _isSyncingFirebase = true;
     try {
         await _pullFromFirebaseInternal();
@@ -1599,6 +1603,10 @@ async function pushSQLToFirebase() {
         console.warn('[Firebase Sync] Error subiendo a Google Cloud:', e.message);
     } finally {
         _isSyncingFirebase = false;
+        if (_pushPendingAfterSync) {
+            _pushPendingAfterSync = false;
+            schedulePushSQLToFirebase(300);
+        }
     }
 }
 

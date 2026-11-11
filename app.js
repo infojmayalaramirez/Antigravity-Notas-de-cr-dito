@@ -607,7 +607,7 @@ async function fetchFromSQLServer() {
   if (SQL_TUNNEL_BASE) {
     try {
       const fetchCtrl = new AbortController();
-      const fetchTimer = setTimeout(() => fetchCtrl.abort(), 2200);
+      const fetchTimer = setTimeout(() => fetchCtrl.abort(), 8000);
       const res = await _nativeFetch(`${SQL_TUNNEL_BASE}/api/catalogos/all`, {
         cache: 'no-store',
         headers: { 'Accept': 'application/json' },
